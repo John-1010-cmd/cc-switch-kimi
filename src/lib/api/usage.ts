@@ -14,6 +14,7 @@ import type {
   PaginatedLogs,
   SessionSyncResult,
   DataSourceSummary,
+  KimiRealtimeMetrics,
 } from "@/types/usage";
 import type { UsageResult } from "@/types";
 import type { AppId } from "./types";
@@ -209,5 +210,10 @@ export const usageApi = {
 
   getDataSourceBreakdown: async (): Promise<DataSourceSummary[]> => {
     return invoke("get_usage_data_sources");
+  },
+
+  // kimi-code 实时指标（纯内存读取、无网络请求，可秒级轮询）
+  getKimiRealtimeMetrics: async (): Promise<KimiRealtimeMetrics> => {
+    return invoke("get_kimi_realtime_metrics");
   },
 };

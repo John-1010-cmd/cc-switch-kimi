@@ -26,6 +26,8 @@ pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 
     LIGHTWEIGHT_MODE.store(true, Ordering::Release);
     crate::tray::refresh_tray_menu(app);
+    // 轻量模式下托盘标题成为唯一实时展示面：进入时立即刷一次（02 §4.3）
+    crate::tray::refresh_tray_title(app, true);
     log::info!("进入轻量模式");
     Ok(())
 }
@@ -51,6 +53,7 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
         }
         LIGHTWEIGHT_MODE.store(false, Ordering::Release);
         crate::tray::refresh_tray_menu(app);
+        crate::tray::refresh_tray_title(app, true);
         log::info!("退出轻量模式");
         return Ok(());
     }
@@ -91,6 +94,7 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 
     LIGHTWEIGHT_MODE.store(false, Ordering::Release);
     crate::tray::refresh_tray_menu(app);
+    crate::tray::refresh_tray_title(app, true);
     log::info!("退出轻量模式");
     Ok(())
 }

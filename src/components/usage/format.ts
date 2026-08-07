@@ -61,6 +61,24 @@ interface I18nLike {
   language?: string;
 }
 
+/**
+ * 实时生成速度显示：null（无样本）→ "—"，否则 "<n> t/s"。
+ * 后端已取整，这里只做空值兜底。
+ */
+export function formatRealtimeTps(tps: number | null): string {
+  if (tps == null || !Number.isFinite(tps)) return "—";
+  return `${Math.round(tps)} t/s`;
+}
+
+/**
+ * 5 分钟缓存命中率显示：null（窗口总输入为 0）→ "—"，否则保留 1 位小数的
+ * 百分比。绝不显示 "0.0%" —— null 与真实 0% 必须可区分。
+ */
+export function formatCacheHitRate5m(rate: number | null): string {
+  if (rate == null || !Number.isFinite(rate)) return "—";
+  return `${rate.toFixed(1)}%`;
+}
+
 export function getResolvedLang(i18n: I18nLike): string {
   return i18n.resolvedLanguage || i18n.language || "en";
 }

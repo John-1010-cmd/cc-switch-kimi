@@ -142,6 +142,8 @@ export const usageKeys = {
     ] as const,
   detail: (requestId: string) =>
     [...usageKeys.all, "detail", requestId] as const,
+  kimiRealtimeMetrics: () =>
+    [...usageKeys.all, "kimi-realtime-metrics"] as const,
   pricing: () => [...usageKeys.all, "pricing"] as const,
   limits: (providerId: string, appType: string) =>
     [...usageKeys.all, "limits", providerId, appType] as const,
@@ -336,6 +338,33 @@ export function useRequestDetail(requestId: string) {
     queryKey: usageKeys.detail(requestId),
     queryFn: () => usageApi.getRequestDetail(requestId),
     enabled: !!requestId,
+  });
+}
+
+const KIMI_REALTIME_REFETCH_INTERVAL_MS = 5000;
+
+/**
+ * kimi-code 实时指标只在「全部 / kimi-code」视角下有语义：数据源是 kimi-code
+ * 的 wire.jsonl，其他 app 过滤视角下恒为空样本，轮询没有意义。
+ */
+export function supportsKimiRealtimeMetrics(appType?: string): boolean {
+  return appType === undefined || appType === "all" || appType === "kimi-code";
+}
+
+/**
+ * kimi-code 实时指标（tps / 5 分钟缓存命中率）。
+ *
+ * 后端纯内存读取、无网络请求，故用 5s 后台轮询；queryKey 挂在 usageKeys.all
+ * 下，`usage-log-recorded` 事件触发的 invalidate 会同步带新它。
+ */
+export function useKimiRealtimeMetrics(appType?: string) {
+  return useQuery({
+    queryKey: usageKeys.kimiRealtimeMetrics(),
+    queryFn: usageApi.getKimiRealtimeMetrics,
+    enabled: supportsKimiRealtimeMetrics(appType),
+    refetchInterval: KIMI_REALTIME_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+    retry: 1,
   });
 }
 

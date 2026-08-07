@@ -1347,6 +1347,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "grokbuild" => crate::services::subscription_grok::get_grok_subscription_quota().await,
+        "kimi-code" => crate::services::subscription_kimi::get_kimi_code_subscription_quota().await,
         _ => Ok(SubscriptionQuota::not_found(tool)),
     }
 }

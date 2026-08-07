@@ -2,7 +2,11 @@ import { cloneElement, isValidElement } from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
-import { useUsageSummaryByApp } from "@/lib/query/usage";
+import {
+  supportsKimiRealtimeMetrics,
+  useKimiRealtimeMetrics,
+  useUsageSummaryByApp,
+} from "@/lib/query/usage";
 import { cn } from "@/lib/utils";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import type { AppId } from "@/lib/api/types";
@@ -11,13 +15,17 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Database,
+  Gauge,
   Info,
   Loader2,
+  Percent,
   Sparkles,
   Zap,
 } from "lucide-react";
 import {
   fmtUsd,
+  formatCacheHitRate5m,
+  formatRealtimeTps,
   formatTokensShort,
   getResolvedLang,
   parseFiniteNumber,
@@ -68,6 +76,10 @@ const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
   opencode: {
     accent: "text-purple-600 dark:text-purple-400",
     iconBg: "bg-purple-500/10",
+  },
+  "kimi-code": {
+    accent: "text-teal-600 dark:text-teal-400",
+    iconBg: "bg-teal-500/10",
   },
 };
 
@@ -128,16 +140,24 @@ type CacheWriteState = "ok" | "partial" | "na";
 /**
  * Anthropic-style protocols report cache creation; OpenAI-style protocols
  * (Codex/Gemini) do not — so a mix shows the number with a caveat, all-OpenAI
- * shows N/A. `appTypes` is the set actually contributing to the displayed
+ * shows N/A. kimi-code is the exception: it sits in CACHE_INCLUSIVE_APP_TYPES
+ * but speaks the Anthropic protocol and reports real cache-creation tokens,
+ * so its N/A state is data-driven (N/A only while no cache-creation data has
+ * been recorded). `apps` is the set actually contributing to the displayed
  * summary (a single app, or every app that participated in "all").
  */
-function deriveCacheWriteState(appTypes: string[]): CacheWriteState {
-  if (appTypes.length === 0) return "ok";
-  const inclusive = appTypes.filter((t) =>
-    CACHE_INCLUSIVE_APP_TYPES.has(t),
-  ).length;
-  if (inclusive === appTypes.length) return "na";
-  if (inclusive === 0) return "ok";
+export function deriveCacheWriteState(
+  apps: ReadonlyArray<{ appType: string; cacheCreationTokens: number }>,
+): CacheWriteState {
+  if (apps.length === 0) return "ok";
+  const naCount = apps.filter((a) => {
+    if (!CACHE_INCLUSIVE_APP_TYPES.has(a.appType)) return false;
+    // kimi-code 走 Anthropic 协议、cacheCreation 有真实值：有数据就不标 N/A
+    if (a.appType === "kimi-code") return a.cacheCreationTokens <= 0;
+    return true;
+  }).length;
+  if (naCount === apps.length) return "na";
+  if (naCount === 0) return "ok";
   return "partial";
 }
 
@@ -180,6 +200,10 @@ export function UsageHero({
     },
   );
 
+  // kimi-code 实时指标（tps / 5m 缓存命中率）：仅「全部 / kimi-code」视角显示
+  const showRealtime = supportsKimiRealtimeMetrics(appType);
+  const { data: realtime } = useKimiRealtimeMetrics(appType);
+
   // No client-side filtering: Hero's totals must match the Trend/Logs/Stats
   // below, which all go through the backend's full set of app_types. The
   // KNOWN_APP_TYPES list only governs which filter buttons appear, not which
@@ -194,7 +218,17 @@ export function UsageHero({
     appType && appType in TITLE_THEMES ? t(`usage.appFilter.${appType}`) : null;
 
   const cacheWriteState = deriveCacheWriteState(
-    appType ? [appType] : allApps.map((a) => a.appType),
+    appType
+      ? [
+          {
+            appType,
+            cacheCreationTokens: summary?.totalCacheCreationTokens ?? 0,
+          },
+        ]
+      : allApps.map((a) => ({
+          appType: a.appType,
+          cacheCreationTokens: a.summary.totalCacheCreationTokens,
+        })),
   );
 
   const input = summary?.totalInputTokens ?? 0;
@@ -308,7 +342,12 @@ export function UsageHero({
             </div>
 
             {/* Bottom row: Breakdown and Hit Rate */}
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <div
+              className={cn(
+                "grid grid-cols-2 gap-3",
+                showRealtime ? "lg:grid-cols-7" : "lg:grid-cols-5",
+              )}
+            >
               <MiniStat
                 icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
                 label={t("usage.freshInput", "新增输入")}
@@ -335,6 +374,30 @@ export function UsageHero({
                 value={formatTokensShort(cacheRead, lang)}
                 accent="text-emerald-500"
               />
+              {showRealtime && (
+                <>
+                  <MiniStat
+                    icon={<Gauge className="h-3.5 w-3.5" />}
+                    label={t("usage.realtime.tps", "实时速度")}
+                    value={formatRealtimeTps(realtime?.tps ?? null)}
+                    accent="text-teal-500"
+                    muted={realtime?.tps == null}
+                  />
+                  <MiniStat
+                    icon={<Percent className="h-3.5 w-3.5" />}
+                    label={t("usage.realtime.cacheHit", "缓存命中（5分钟）")}
+                    value={formatCacheHitRate5m(
+                      realtime?.cacheHitRate5m ?? null,
+                    )}
+                    accent="text-emerald-500"
+                    muted={realtime?.cacheHitRate5m == null}
+                    tooltip={t(
+                      "usage.realtime.cacheHitHint",
+                      "按供应商上报口径统计，OpenAI 兼容端点可能偏低",
+                    )}
+                  />
+                </>
+              )}
 
               <div className="col-span-2 lg:col-span-1 flex flex-col justify-center rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm">
                 <div className="flex items-center justify-between text-[11px] mb-2">
