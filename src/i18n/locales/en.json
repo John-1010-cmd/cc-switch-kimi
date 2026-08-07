@@ -887,7 +887,16 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "kimi-code": "Kimi Code"
+  },
+  "kimiCode": {
+    "form": {
+      "configToml": "config.toml Configuration",
+      "configRequired": "Please fill in the config.toml content",
+      "tomlInvalid": "Invalid TOML syntax. Please check the config content",
+      "managedLoginHint": "The managed provider (managed:kimi-code) login state is owned by the Kimi Code CLI — run /login in the CLI first. Switching only overwrites config.toml and never touches the credentials directory."
+    }
   },
   "grokBuild": {
     "apiBackend": "API backend",
@@ -1480,6 +1489,11 @@
     "realTotalHint": "Input + Output + Cache Write + Cache Read",
     "freshInput": "Fresh Input",
     "cacheHitRate": "Cache Hit Rate",
+    "realtime": {
+      "tps": "Realtime Speed",
+      "cacheHit": "Cache Hit (5m)",
+      "cacheHitHint": "Cache metrics follow the provider's reported semantics; OpenAI-compatible endpoints may underreport"
+    },
     "requestLogs": "Request Logs",
     "providerStats": "Provider Stats",
     "modelStats": "Model Stats",
@@ -1508,7 +1522,8 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode",
-      "grokbuild": "Grok Build"
+      "grokbuild": "Grok Build",
+      "kimi-code": "Kimi Code"
     },
     "rawInputLabel": "Raw",
     "rebuildCodex": {
@@ -1802,7 +1817,8 @@
         "grokbuild": "Grok Build",
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
-        "hermes": "Hermes"
+        "hermes": "Hermes",
+        "kimi-code": "Kimi Code"
       }
     },
     "userLevelPath": "User-level MCP path",

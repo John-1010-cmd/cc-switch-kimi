@@ -887,7 +887,16 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "kimi-code": "Kimi Code"
+  },
+  "kimiCode": {
+    "form": {
+      "configToml": "config.toml 設定",
+      "configRequired": "config.toml の設定内容を入力してください",
+      "tomlInvalid": "TOML 形式が正しくありません。設定内容を確認してください",
+      "managedLoginHint": "マネージドプロバイダー（managed:kimi-code）のログイン状態は Kimi Code CLI が管理します。先に CLI で /login を実行してください。切り替えは config.toml のみを上書きし、credentials ディレクトリには触れません。"
+    }
   },
   "grokBuild": {
     "apiBackend": "API Backend",
@@ -1480,6 +1489,11 @@
     "realTotalHint": "Input + Output + キャッシュ書込 + キャッシュ命中",
     "freshInput": "新規入力",
     "cacheHitRate": "キャッシュヒット率",
+    "realtime": {
+      "tps": "リアルタイム速度",
+      "cacheHit": "キャッシュヒット（5分）",
+      "cacheHitHint": "キャッシュ指標はプロバイダーの報告口径に基づくため、OpenAI 互換エンドポイントでは低く表示される場合があります"
+    },
     "requestLogs": "リクエストログ",
     "providerStats": "プロバイダー統計",
     "modelStats": "モデル統計",
@@ -1508,7 +1522,8 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode",
-      "grokbuild": "Grok Build"
+      "grokbuild": "Grok Build",
+      "kimi-code": "Kimi Code"
     },
     "rawInputLabel": "原始",
     "rebuildCodex": {
@@ -1802,7 +1817,8 @@
         "grokbuild": "Grok Build",
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
-        "hermes": "Hermes"
+        "hermes": "Hermes",
+        "kimi-code": "Kimi Code"
       }
     },
     "userLevelPath": "ユーザーレベルの MCP パス",

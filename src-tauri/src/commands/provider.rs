@@ -158,6 +158,40 @@ fn import_default_config_internal(state: &AppState, app_type: AppType) -> Result
         }
     }
 
+    if matches!(app_type, AppType::KimiCode) {
+        // 官方登录态（live 的 default_model 路由到 managed:kimi-code block）+
+        // 用户手动导入：正确结果是让 Kimi For Coding Official 成为当前供应商，
+        // 而非把托管模板再导入成 default。语义同上方 GrokBuild 分支。
+        if let Ok(config_text) =
+            crate::kimi_code_config::read_and_validate_kimi_code_config_text()
+        {
+            if crate::kimi_code_config::is_official_live_config(&config_text) {
+                state.db.ensure_official_seed_by_id(
+                    crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID,
+                    AppType::KimiCode,
+                )?;
+                state.db.set_current_provider(
+                    app_type.as_str(),
+                    crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID,
+                )?;
+                crate::settings::set_current_provider(
+                    &app_type,
+                    Some(crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID),
+                )?;
+                return Ok(true);
+            }
+        }
+
+        // Safety net：用户主动点导入是"重新整理该表"的隐式信号，把官方入口补回来。
+        // 失败只 warn，不影响导入主流程。
+        if let Err(e) = state.db.ensure_official_seed_by_id(
+            crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID,
+            AppType::KimiCode,
+        ) {
+            log::warn!("Failed to ensure kimi-code-official seed during import: {e}");
+        }
+    }
+
     let imported = ProviderService::import_default_config(state, app_type.clone())?;
 
     if imported {
@@ -294,6 +328,17 @@ pub fn ensure_grokbuild_official_provider(state: State<'_, AppState>) -> Result<
         .ensure_official_seed_by_id(
             crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
             AppType::GrokBuild,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ensure_kimi_code_official_provider(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .db
+        .ensure_official_seed_by_id(
+            crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID,
+            AppType::KimiCode,
         )
         .map_err(|e| e.to_string())
 }

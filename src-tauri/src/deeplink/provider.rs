@@ -152,6 +152,7 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
+        AppType::KimiCode => build_kimi_code_settings(request),
     };
 
     // Build usage script configuration if provided
@@ -488,6 +489,33 @@ fn build_grokbuild_settings(request: &DeepLinkImportRequest) -> serde_json::Valu
     })
 }
 
+/// Build Kimi Code settings configuration（{"config": "<整份 config.toml 文本>"}）
+fn build_kimi_code_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+    let model = request
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(crate::kimi_code_config::KIMI_CODE_DEFAULT_MODEL)
+        .trim();
+    let endpoint = get_primary_endpoint(request).trim().to_string();
+    let api_key = request.api_key.as_deref().unwrap_or("").trim();
+
+    let model_value = toml_edit::Value::from(model).to_string();
+    let endpoint_value = toml_edit::Value::from(endpoint.as_str()).to_string();
+    let api_key_value = toml_edit::Value::from(api_key).to_string();
+
+    // deeplink 导入按 OpenAI 兼容协议生成单供应商配置（type = "openai"）
+    json!({
+        "config": format!(
+            "default_model = \"custom/{model}\"\n\n[providers.custom]\ntype = \"openai\"\nbase_url = {endpoint_value}\napi_key = {api_key_value}\n\n[models.\"custom/{model}\"]\nprovider = \"custom\"\nmodel = {model_value}\nmax_context_size = 262144\n",
+            model = model,
+            model_value = model_value,
+            endpoint_value = endpoint_value,
+            api_key_value = api_key_value,
+        )
+    })
+}
+
 /// Build OpenCode settings configuration
 fn build_opencode_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     let endpoint = get_primary_endpoint(request);
@@ -645,6 +673,7 @@ pub fn parse_and_merge_config(
         "codex" => merge_codex_config(&mut merged, &config_value)?,
         "gemini" => merge_gemini_config(&mut merged, &config_value)?,
         "grokbuild" => merge_grokbuild_config(&mut merged, &config_value)?,
+        "kimi-code" => merge_kimi_code_config(&mut merged, &config_value)?,
         // Additive mode apps use JSON config directly; pass through as-is
         "openclaw" | "opencode" | "hermes" => {
             merge_additive_config(&mut merged, &config_value)?;
@@ -771,6 +800,53 @@ fn merge_codex_config(
             if request.homepage.is_none() {
                 request.homepage = Some("https://openai.com".to_string());
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Merge Kimi Code configuration from config file（{"config": "<config.toml 文本>"}，
+/// 与 Codex 同为 TOML 单文件形态，但无 auth 键——凭据在 [providers.*] 的 api_key 内）
+fn merge_kimi_code_config(
+    request: &mut DeepLinkImportRequest,
+    config: &serde_json::Value,
+) -> Result<(), AppError> {
+    let config_str = config.get("config").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Auto-fill API key from [providers.*].api_key（managed block 走 OAuth、无 api_key，
+    // 自动留空由后续校验/用户补充）
+    if request.api_key.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(api_key) = crate::kimi_code_config::extract_kimi_code_api_key(config_str) {
+            request.api_key = Some(api_key);
+        }
+    }
+
+    // Auto-fill endpoint from default_model 指向的 provider block
+    if request.endpoint.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(base_url) = crate::kimi_code_config::extract_kimi_code_base_url(config_str) {
+            request.endpoint = Some(base_url);
+        }
+    }
+
+    // Auto-fill model from default_model 的模型段（"<provider>/<model>"）
+    if request.model.is_none() {
+        if let Ok(toml_value) = toml::from_str::<toml::Value>(config_str) {
+            if let Some(default_model) = toml_value.get("default_model").and_then(|v| v.as_str())
+            {
+                if let Some((_, model)) = default_model.split_once('/') {
+                    if !model.trim().is_empty() {
+                        request.model = Some(model.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-fill homepage from endpoint
+    if request.homepage.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(endpoint) = request.endpoint.as_ref().filter(|s| !s.is_empty()) {
+            request.homepage = infer_homepage_from_endpoint(endpoint);
         }
     }
 

@@ -5,7 +5,9 @@ import { homeDir, join } from "@tauri-apps/api/path";
 import { settingsApi, type AppId } from "@/lib/api";
 import type { SettingsFormState } from "./useSettingsForm";
 
-export type DirectoryAppId = Exclude<AppId, "claude-desktop">;
+// kimi-code 不在自定义目录设置内：配置目录由 KIMI_CODE_HOME 环境变量解析，
+// 不走 cc-switch 的 per-app override（设计文档 01 §1.2 #21）
+export type DirectoryAppId = Exclude<AppId, "claude-desktop" | "kimi-code">;
 type AppDirectoryKey =
   | "claude"
   | "codex"

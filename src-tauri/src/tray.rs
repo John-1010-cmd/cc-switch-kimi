@@ -156,7 +156,7 @@ pub struct TrayAppSection {
 pub const AUTO_SUFFIX: &str = "auto";
 pub const TRAY_ID: &str = "cc-switch";
 
-pub const TRAY_SECTIONS: [TrayAppSection; 4] = [
+pub const TRAY_SECTIONS: [TrayAppSection; 5] = [
     TrayAppSection {
         app_type: AppType::Claude,
         prefix: "claude_",
@@ -170,6 +170,13 @@ pub const TRAY_SECTIONS: [TrayAppSection; 4] = [
         empty_id: "codex_empty",
         header_label: "Codex",
         log_name: "Codex",
+    },
+    TrayAppSection {
+        app_type: AppType::KimiCode,
+        prefix: "kimi_code_",
+        empty_id: "kimi_code_empty",
+        header_label: "Kimi Code",
+        log_name: "Kimi Code",
     },
     TrayAppSection {
         app_type: AppType::Gemini,
@@ -1021,7 +1028,133 @@ pub fn schedule_tray_refresh(app: &tauri::AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(50));
         TRAY_REBUILD_SCHEDULED.store(false, Ordering::Release);
         update_tray_usage_labels(&app);
+        // 额度快照刚更新：立即刷一次托盘标题（绕过 5s 节流，文本去重防抖）
+        refresh_tray_title(&app, true);
     });
+}
+
+// ── 托盘标题（设计文档 02 §4.1；风险 R8）──────────────────────────────
+//
+// macOS 菜单栏图标旁常驻紧凑文本（`7D 42% · 5H 87% · 31 t/s`）；
+// Windows/Linux 无 set_title 等价物（2026-08-03 Q6 拍板）回落 tooltip。
+// 数据来源全部是进程内缓存（订阅快照 + 实时内存态），绝不发网络请求；
+// 更新节流 ≥5s/次，文本未变不触碰系统 API。
+
+static LAST_TRAY_TITLE_UPDATE: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+static LAST_TRAY_TITLE_TEXT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+const MIN_TRAY_TITLE_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// 菜单栏空间有限：紧凑格式 ≤24 字符目标，超宽截断（R8）
+const MAX_TRAY_TITLE_LEN: usize = 24;
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_TRAY_TOOLTIP: &str = "CC Switch";
+
+/// 组装紧凑标题：周额度 → 5h → TPS 三段按数据可得性省略，超长截断。
+/// 无任何可用段时返回 None（调用方清空标题）。
+pub(crate) fn format_kimi_tray_title(
+    quota: Option<&crate::services::subscription::SubscriptionQuota>,
+    metrics: &crate::services::session_usage_kimi::KimiRealtimeMetrics,
+) -> Option<String> {
+    use crate::services::subscription::{TIER_FIVE_HOUR, TIER_WEEKLY_LIMIT};
+
+    let mut segments: Vec<String> = Vec::new();
+    if let Some(quota) = quota.filter(|q| q.success) {
+        let tier_pct = |name: &str| {
+            quota
+                .tiers
+                .iter()
+                .find(|t| t.name == name)
+                .filter(|t| t.utilization.is_finite())
+                .map(|t| t.utilization.round() as i64)
+        };
+        if let Some(pct) = tier_pct(TIER_WEEKLY_LIMIT) {
+            segments.push(format!("7D {pct}%"));
+        }
+        if let Some(pct) = tier_pct(TIER_FIVE_HOUR) {
+            segments.push(format!("5H {pct}%"));
+        }
+    }
+    if let Some(tps) = metrics.tps.filter(|v| v.is_finite() && *v > 0.0) {
+        segments.push(format!("{} t/s", tps.round() as i64));
+    }
+    if segments.is_empty() {
+        return None;
+    }
+
+    let title = segments.join(" · ");
+    if title.chars().count() <= MAX_TRAY_TITLE_LEN {
+        Some(title)
+    } else {
+        let truncated: String = title.chars().take(MAX_TRAY_TITLE_LEN - 1).collect();
+        Some(format!("{truncated}…"))
+    }
+}
+
+/// 读取进程内缓存计算当前托盘标题；kimi-code 在可见性设置中被隐藏时不出标题。
+fn compute_tray_title(app_state: &AppState) -> Option<String> {
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+    if !visible_apps.is_visible(&AppType::KimiCode) {
+        return None;
+    }
+    let quota = app_state
+        .usage_cache
+        .with_subscription(&AppType::KimiCode, |q| q.clone());
+    let metrics = crate::services::session_usage_kimi::get_kimi_realtime_metrics();
+    format_kimi_tray_title(quota.as_ref(), &metrics)
+}
+
+/// 刷新托盘标题。`force=false` 时 5s 节流（ tokio 定时器节拍用）；
+/// `force=true`（额度快照更新 / 轻量模式切换）立即刷新一次。
+/// 文本未变化时不调用系统 API，避免菜单栏闪烁。
+pub fn refresh_tray_title(app: &tauri::AppHandle, force: bool) {
+    {
+        let mut guard = LAST_TRAY_TITLE_UPDATE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !force {
+            if let Some(last) = *guard {
+                if last.elapsed() < MIN_TRAY_TITLE_UPDATE_INTERVAL {
+                    return;
+                }
+            }
+        }
+        *guard = Some(std::time::Instant::now());
+    }
+
+    let Some(app_state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let title = compute_tray_title(&app_state);
+
+    {
+        let mut last = LAST_TRAY_TITLE_TEXT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *last == title {
+            return;
+        }
+        *last = title.clone();
+    }
+
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = tray.set_title(title.as_deref()) {
+            log::debug!("[Tray] 设置菜单栏标题失败: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Windows/Linux 回落 tooltip（Q6：二期再议等价呈现）
+        let tooltip = title.unwrap_or_else(|| DEFAULT_TRAY_TOOLTIP.to_string());
+        if let Err(e) = tray.set_tooltip(Some(tooltip)) {
+            log::debug!("[Tray] 设置托盘 tooltip 失败: {e}");
+        }
+    }
 }
 
 /// 并行刷新每个可见 app "当前 provider" 的用量；成功 / 失败结果都通过各
@@ -1125,14 +1258,74 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_script_summary, format_subscription_summary, TRAY_ID, TRAY_SECTIONS};
+    use super::{
+        format_kimi_tray_title, format_script_summary, format_subscription_summary, TRAY_ID,
+        TRAY_SECTIONS,
+    };
     use crate::app_config::AppType;
     use crate::provider::{UsageData, UsageResult};
+    use crate::services::session_usage_kimi::KimiRealtimeMetrics;
     use crate::services::subscription::{
         CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
         TIER_GEMINI_FLASH_LITE, TIER_GEMINI_PRO, TIER_MONTHLY, TIER_SEVEN_DAY, TIER_SEVEN_DAY_OPUS,
         TIER_SEVEN_DAY_SONNET, TIER_THIRTY_DAY, TIER_WEEKLY_LIMIT,
     };
+
+    fn realtime_metrics(tps: Option<f64>) -> KimiRealtimeMetrics {
+        KimiRealtimeMetrics {
+            tps,
+            sample_count: tps.map(|_| 3).unwrap_or(0),
+            active_sessions: 0,
+            cache_hit_rate_5m: None,
+            last_event_at: None,
+        }
+    }
+
+    #[test]
+    fn tray_title_full_compact_format() {
+        let quota = make_quota(
+            "kimi-code",
+            true,
+            vec![tier(TIER_WEEKLY_LIMIT, 42.4), tier(TIER_FIVE_HOUR, 86.6)],
+        );
+        let title = format_kimi_tray_title(Some(&quota), &realtime_metrics(Some(31.2)))
+            .expect("应有标题");
+        assert_eq!(title, "7D 42% · 5H 87% · 31 t/s");
+    }
+
+    #[test]
+    fn tray_title_omits_unavailable_segments() {
+        // 无额度数据（非托管供应商）只留 TPS
+        let title = format_kimi_tray_title(None, &realtime_metrics(Some(58.0))).unwrap();
+        assert_eq!(title, "58 t/s");
+
+        // 无活跃生成（样本窗口为空）省略 TPS 段
+        let quota = make_quota("kimi-code", true, vec![tier(TIER_FIVE_HOUR, 12.0)]);
+        let title = format_kimi_tray_title(Some(&quota), &realtime_metrics(None)).unwrap();
+        assert_eq!(title, "5H 12%");
+
+        // 配额查询失败（success=false）不显示百分比
+        let failed = make_quota("kimi-code", false, vec![tier(TIER_FIVE_HOUR, 12.0)]);
+        assert_eq!(
+            format_kimi_tray_title(Some(&failed), &realtime_metrics(None)),
+            None
+        );
+    }
+
+    #[test]
+    fn tray_title_truncates_beyond_menu_bar_budget() {
+        let quota = make_quota(
+            "kimi-code",
+            true,
+            vec![tier(TIER_WEEKLY_LIMIT, 100.0), tier(TIER_FIVE_HOUR, 100.0)],
+        );
+        let title = format_kimi_tray_title(Some(&quota), &realtime_metrics(Some(999.0))).unwrap();
+        assert!(
+            title.chars().count() <= super::MAX_TRAY_TITLE_LEN,
+            "标题 {title} 超长"
+        );
+        assert!(title.ends_with('…'), "截断应有省略号: {title}");
+    }
 
     #[test]
     fn tray_id_is_unique_to_app() {

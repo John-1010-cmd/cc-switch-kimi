@@ -89,6 +89,7 @@ impl ConfigService {
         Self::sync_current_provider_for_app(config, &AppType::Codex)?;
         Self::sync_current_provider_for_app(config, &AppType::Gemini)?;
         Self::sync_current_provider_for_app(config, &AppType::GrokBuild)?;
+        Self::sync_current_provider_for_app(config, &AppType::KimiCode)?;
         Ok(())
     }
 
@@ -138,9 +139,22 @@ impl ConfigService {
             AppType::Hermes => {
                 // Hermes uses additive mode, no live sync needed
             }
+            AppType::KimiCode => Self::sync_kimi_code_live(&provider)?,
         }
 
         Ok(())
+    }
+
+    /// Kimi Code 无 auth 文件（登录态在 credentials/，由 CLI 的 /login 管理），
+    /// 切换 = 把 provider 的整份 config.toml 文本原子覆写到 live，比 sync_codex_live
+    /// 少一级 auth 校验与回滚。
+    fn sync_kimi_code_live(provider: &Provider) -> Result<(), AppError> {
+        let settings = provider.settings_config.as_object().ok_or_else(|| {
+            AppError::Config(format!("供应商 {} 的 Kimi Code 配置必须是对象", provider.id))
+        })?;
+        let cfg_text = settings.get("config").and_then(Value::as_str).unwrap_or("");
+
+        crate::kimi_code_config::write_kimi_code_live_config_atomic(cfg_text)
     }
 
     fn sync_codex_live(

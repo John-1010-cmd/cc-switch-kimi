@@ -24,6 +24,7 @@ export const APP_IDS: AppId[] = [
   "opencode",
   "openclaw",
   "hermes",
+  "kimi-code",
 ];
 
 /** App IDs shown in Skills panels (excludes OpenClaw — it doesn't support Skills) */
@@ -36,8 +37,8 @@ export const SKILLS_APP_IDS: AppId[] = [
   "hermes",
 ];
 
-/** App IDs shown in MCP panels (excludes OpenClaw) */
-export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS];
+/** App IDs shown in MCP panels (excludes OpenClaw; Kimi Code 支持 MCP，随 M1 纳入) */
+export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS, "kimi-code"];
 
 export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   claude: {
@@ -116,6 +117,21 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
       <ProviderIcon
         icon="hermes"
         name="Hermes"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-violet-500/10 ring-1 ring-violet-500/20 hover:bg-violet-500/20 text-violet-600 dark:text-violet-400",
+    badgeClass:
+      "bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20 border-0 gap-1.5",
+  },
+  "kimi-code": {
+    label: "Kimi Code",
+    icon: (
+      <ProviderIcon
+        icon="kimi"
+        name="Kimi Code"
         size={14}
         showFallback={false}
       />

@@ -888,7 +888,16 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "kimi-code": "Kimi Code"
+  },
+  "kimiCode": {
+    "form": {
+      "configToml": "config.toml 設定",
+      "configRequired": "請填寫 config.toml 設定內容",
+      "tomlInvalid": "TOML 格式錯誤，請檢查設定內容",
+      "managedLoginHint": "託管供應商（managed:kimi-code）的登入狀態由 Kimi Code CLI 管理：請先在 CLI 中執行 /login。切換只會覆寫 config.toml，不會修改 credentials 目錄。"
+    }
   },
   "grokBuild": {
     "apiBackend": "API Backend",
@@ -1481,6 +1490,11 @@
     "realTotalHint": "Input + Output + 快取建立 + 快取命中",
     "freshInput": "新增輸入",
     "cacheHitRate": "快取命中率",
+    "realtime": {
+      "tps": "即時速度",
+      "cacheHit": "快取命中（5 分鐘）",
+      "cacheHitHint": "快取指標按供應商上報口徑統計，OpenAI 相容端點可能偏低"
+    },
     "requestLogs": "請求日誌",
     "providerStats": "Provider 統計",
     "modelStats": "模型統計",
@@ -1509,7 +1523,8 @@
       "codex": "Codex",
       "gemini": "Gemini",
       "opencode": "OpenCode",
-      "grokbuild": "Grok Build"
+      "grokbuild": "Grok Build",
+      "kimi-code": "Kimi Code"
     },
     "rawInputLabel": "原始",
     "rebuildCodex": {
@@ -1803,7 +1818,8 @@
         "grokbuild": "Grok Build",
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
-        "hermes": "Hermes"
+        "hermes": "Hermes",
+        "kimi-code": "Kimi Code"
       }
     },
     "userLevelPath": "使用者級 MCP 設定路徑",

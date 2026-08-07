@@ -565,6 +565,8 @@ impl SkillService {
                     return Ok(custom.join("skills"));
                 }
             }
+            // Kimi Code 不参与 Skill 同步（无 override 目录，走下方默认路径占位）
+            AppType::KimiCode => {}
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -581,6 +583,9 @@ impl SkillService {
             AppType::OpenCode => home.join(".config").join("opencode").join("skills"),
             AppType::OpenClaw => home.join(".openclaw").join("skills"),
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
+            // Kimi Code 不参与 Skill 同步（SkillApps.is_enabled_for(KimiCode) 恒 false），
+            // 该路径仅是占位，不会被写入
+            AppType::KimiCode => crate::kimi_code_config::get_kimi_code_config_dir().join("skills"),
         })
     }
 
@@ -1858,7 +1863,8 @@ impl SkillService {
 
     /// 同步所有已启用的 Skills 到指定应用
     pub fn sync_to_app(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop) {
+        // Kimi Code 不参与 Skill 同步（SkillApps 无 kimi_code 字段）
+        if matches!(app, AppType::ClaudeDesktop | AppType::KimiCode) {
             return Ok(());
         }
 

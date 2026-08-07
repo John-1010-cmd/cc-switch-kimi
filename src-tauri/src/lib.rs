@@ -17,6 +17,7 @@ mod gemini_mcp;
 mod grok_config;
 pub mod hermes_config;
 mod init_status;
+mod kimi_code_config;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
@@ -29,7 +30,9 @@ mod prompt;
 mod prompt_files;
 mod provider;
 mod proxy;
-mod services;
+// pub 开放给 tests/ 集成测试（如 session_usage_kimi_ingest 直接调用
+// services::session_usage_kimi::sync_kimi_usage 做入库对账）。
+pub mod services;
 mod session_manager;
 mod settings;
 mod store;
@@ -932,6 +935,14 @@ pub fn run() {
                     Ok(_) => log::debug!("○ No Hermes MCP servers found to import"),
                     Err(e) => log::warn!("✗ Failed to import Hermes MCP: {e}"),
                 }
+
+                match crate::services::mcp::McpService::import_from_kimi_code(&app_state) {
+                    Ok(count) if count > 0 => {
+                        log::info!("✓ Imported {count} MCP server(s) from Kimi Code");
+                    }
+                    Ok(_) => log::debug!("○ No Kimi Code MCP servers found to import"),
+                    Err(e) => log::warn!("✗ Failed to import Kimi Code MCP: {e}"),
+                }
             }
 
             // 4. 导入提示词文件（表空时触发）
@@ -946,6 +957,7 @@ pub fn run() {
                     crate::app_config::AppType::OpenCode,
                     crate::app_config::AppType::OpenClaw,
                     crate::app_config::AppType::Hermes,
+                    crate::app_config::AppType::KimiCode,
                 ] {
                     match crate::services::prompt::PromptService::import_from_file_on_first_launch(
                         &app_state,
@@ -1265,6 +1277,64 @@ pub fn run() {
                         run_session_sync(db_for_session_sync.clone(), false).await;
                     }
                 });
+
+                // Kimi Code 实时 tail（设计文档 02 §2.3 实时层）：每 1s 对活跃
+                // wire.jsonl（mtime < 120s，集合由上面 60s 全扫维护）做增量同步，
+                // 活跃会话端到端延迟 ≈1–3s，闲时零额外 IO。与全扫共用
+                // session_sync_mutex 互斥；轻量模式下主窗口销毁不影响本循环。
+                let db_for_kimi_tail = state.db.clone();
+                tauri::async_runtime::spawn(async move {
+                    const KIMI_TAIL_INTERVAL_SECS: u64 = 1;
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                        KIMI_TAIL_INTERVAL_SECS,
+                    ));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    interval.tick().await; // skip immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let _guard = crate::services::session_usage::session_sync_mutex()
+                            .lock()
+                            .await;
+                        let db = db_for_kimi_tail.clone();
+                        let task = tauri::async_runtime::spawn_blocking(move || {
+                            crate::services::session_usage_kimi::tail_active_kimi_files(&db)
+                        });
+                        match task.await {
+                            Ok(Ok(result)) if !result.errors.is_empty() => {
+                                log::warn!(
+                                    "Kimi session tail completed with {} error(s)",
+                                    result.errors.len()
+                                );
+                            }
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => {
+                                log::warn!("Kimi session tail failed: {error}")
+                            }
+                            Err(error) => {
+                                log::warn!("Kimi session tail blocking task failed: {error}")
+                            }
+                        }
+                    }
+                });
+
+                // 托盘标题定时器（02 §4.2 两条刷新频率严格分离）：只读进程内
+                // 缓存（订阅快照 + KimiRealtimeState），绝不发网络请求——额度
+                // API 由前端 react-query 5min 轮询与悬停 10s 节流各自驱动。
+                // 活跃期 5s 一档（配合 refresh_tray_title 的 5s 节流），
+                // 非活跃期 60s 心跳。轻量模式下窗口销毁不影响本循环。
+                let app_for_tray_title = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        crate::tray::refresh_tray_title(&app_for_tray_title, false);
+                        let interval = if crate::services::session_usage_kimi::kimi_realtime_is_active()
+                        {
+                            std::time::Duration::from_secs(5)
+                        } else {
+                            std::time::Duration::from_secs(60)
+                        };
+                        tokio::time::sleep(interval).await;
+                    }
+                });
             });
 
             // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏
@@ -1330,6 +1400,7 @@ pub fn run() {
             commands::ensure_claude_desktop_official_provider,
             commands::ensure_codex_official_provider,
             commands::ensure_grokbuild_official_provider,
+            commands::ensure_kimi_code_official_provider,
             commands::get_claude_config_status,
             commands::get_config_status,
             commands::get_claude_code_config_path,
@@ -1543,6 +1614,7 @@ pub fn run() {
             commands::sync_session_usage,
             commands::rebuild_codex_usage,
             commands::get_usage_data_sources,
+            commands::get_kimi_realtime_metrics,
             // Stream health check
             commands::stream_check_provider,
             commands::stream_check_all_providers,

@@ -6,7 +6,8 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { ResolvedDirectories } from "@/hooks/useSettings";
 
-type DirectoryAppId = Exclude<AppId, "claude-desktop">;
+// kimi-code 配置目录由 KIMI_CODE_HOME 解析，不提供 per-app override
+type DirectoryAppId = Exclude<AppId, "claude-desktop" | "kimi-code">;
 
 interface DirectorySettingsProps {
   appConfigDir?: string;

@@ -12,7 +12,7 @@ export type AppType =
   | "openclaw"
   | "hermes";
 
-/** Skill 应用启用状态 */
+/** Skill 应用启用状态（kimi-code 不支持 Skills，字段仅为索引兼容保留） */
 export interface SkillApps {
   claude: boolean;
   "claude-desktop"?: boolean;
@@ -22,6 +22,7 @@ export interface SkillApps {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  "kimi-code"?: boolean;
 }
 
 /** 已安装的 Skill（v3.10.0+ 统一结构） */

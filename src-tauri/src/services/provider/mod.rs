@@ -3489,6 +3489,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::KimiCode => Self::extract_kimi_code_common_config(&provider.settings_config),
         }
     }
 
@@ -3506,6 +3507,7 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::KimiCode => Self::extract_kimi_code_common_config(settings_config),
         }
     }
 
@@ -3720,6 +3722,49 @@ impl ProviderService {
         {
             root.remove(crate::codex_config::CODEX_WEB_SEARCH_FIELD);
         }
+
+        // Clean up multiple empty lines (keep at most one blank line).
+        let mut cleaned = String::new();
+        let mut blank_run = 0usize;
+        for line in doc.to_string().lines() {
+            if line.trim().is_empty() {
+                blank_run += 1;
+                if blank_run <= 1 {
+                    cleaned.push('\n');
+                }
+                continue;
+            }
+            blank_run = 0;
+            cleaned.push_str(line);
+            cleaned.push('\n');
+        }
+
+        Ok(cleaned.trim().to_string())
+    }
+
+    /// Extract common config for Kimi Code (TOML format, same {"config": "<toml>"} shape as Codex)
+    ///
+    /// Strips provider-specific routing fields (`default_model` / `[providers.*]` /
+    /// `[models.*]`，含 base_url/api_key 等凭据)，剩下的用户偏好可共享。
+    /// MCP 在独立的 mcp.json（不占 config.toml），无需剥离。
+    fn extract_kimi_code_common_config(settings: &Value) -> Result<String, AppError> {
+        let config_toml = settings
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if config_toml.trim().is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut doc = config_toml
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| AppError::Message(format!("TOML parse error: {e}")))?;
+
+        let root = doc.as_table_mut();
+        root.remove("default_model");
+        root.remove("providers");
+        root.remove("models");
 
         // Clean up multiple empty lines (keep at most one blank line).
         let mut cleaned = String::new();
@@ -4271,6 +4316,29 @@ impl ProviderService {
                     ));
                 }
             }
+            AppType::KimiCode => {
+                let settings = provider.settings_config.as_object().ok_or_else(|| {
+                    AppError::localized(
+                        "provider.kimi_code.settings.not_object",
+                        "Kimi Code 配置必须是 JSON 对象",
+                        "Kimi Code configuration must be a JSON object",
+                    )
+                })?;
+
+                // Kimi Code 无 auth 键：settings_config 固定为 {"config": "<整份 config.toml 文本>"}
+                if let Some(config_value) = settings.get("config") {
+                    if !(config_value.is_string() || config_value.is_null()) {
+                        return Err(AppError::localized(
+                            "provider.kimi_code.config.invalid_type",
+                            "Kimi Code config 字段必须是字符串",
+                            "Kimi Code config field must be a string",
+                        ));
+                    }
+                    if let Some(cfg_text) = config_value.as_str() {
+                        crate::kimi_code_config::validate_kimi_code_config_toml(cfg_text)?;
+                    }
+                }
+            }
         }
 
         // Validate and clean UsageScript configuration (common for all app types)
@@ -4496,6 +4564,23 @@ impl ProviderService {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+
+                Ok((api_key, base_url))
+            }
+            AppType::KimiCode => {
+                // Kimi Code：从 config.toml 的 [providers.*] 提取；managed:kimi-code
+                // block 走 OAuth、无 api_key 属正常（凭据在 credentials/），缺省返回
+                // 空串不报错。
+                let config_toml = provider
+                    .settings_config
+                    .get("config")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let api_key = crate::kimi_code_config::extract_kimi_code_api_key(config_toml)
+                    .unwrap_or_default();
+                let base_url = crate::kimi_code_config::extract_kimi_code_base_url(config_toml)
+                    .unwrap_or_default();
 
                 Ok((api_key, base_url))
             }

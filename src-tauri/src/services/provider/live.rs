@@ -493,7 +493,8 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             Ok(source) if source.is_object() => json_is_subset(settings, &source),
             _ => false,
         },
-        AppType::Codex => {
+        AppType::Codex | AppType::KimiCode => {
+            // 两者同为 TOML 单文件 app，settings 均为 {"config": "<toml 文本>"}
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
             if config_toml.trim().is_empty() {
                 return false;
@@ -588,6 +589,29 @@ pub(crate) fn remove_common_config_from_settings(
             }
             Ok(result)
         }
+        AppType::KimiCode => {
+            // 与 Codex 同语义（同为 TOML 单文件 app）：逆向剥离片段，避免片段重复入库
+            let mut result = settings.clone();
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let mut target_doc = if config_toml.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                config_toml.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!(
+                        "Invalid Kimi Code config.toml while removing common config: {e}"
+                    ))
+                })?
+            };
+            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
+                AppError::Message(format!("Invalid Kimi Code common config snippet: {e}"))
+            })?;
+
+            remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+            }
+            Ok(result)
+        }
         AppType::Gemini => {
             let source = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
@@ -637,6 +661,29 @@ fn apply_common_config_to_settings(
             };
             let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
                 AppError::Message(format!("Invalid Codex common config snippet: {e}"))
+            })?;
+
+            merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+            }
+            Ok(result)
+        }
+        AppType::KimiCode => {
+            // 与 Codex 同语义（同为 TOML 单文件 app）：把片段深合并进 provider 的 TOML 文本
+            let mut result = settings.clone();
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let mut target_doc = if config_toml.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                config_toml.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!(
+                        "Invalid Kimi Code config.toml while applying common config: {e}"
+                    ))
+                })?
+            };
+            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
+                AppError::Message(format!("Invalid Kimi Code common config snippet: {e}"))
             })?;
 
             merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
@@ -842,6 +889,12 @@ fn restore_live_settings_for_provider_backfill(
             );
         }
         return settings;
+    }
+    if matches!(app_type, AppType::KimiCode) {
+        // Kimi Code 与 Codex 同为 TOML 单文件 app，但无 auth 文件、MCP 在独立的
+        // mcp.json（不占 config.toml），live 文本即完整 SSOT 投影，回填无需任何
+        // 剥离/还原，原样返回。
+        return live_settings;
     }
     if !matches!(app_type, AppType::Codex) {
         return live_settings;
@@ -1162,6 +1215,17 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
+        AppType::KimiCode => {
+            // Kimi Code 无 auth 文件：整份 config.toml 文本原子覆写（switch 模式）。
+            // 校验失败不落盘（write_kimi_code_live_config_atomic 内部保证），
+            // 也绝不触碰 credentials/ 目录。
+            let config_str = provider
+                .settings_config
+                .get("config")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            crate::kimi_code_config::write_kimi_code_live_config_atomic(config_str)?;
+        }
     }
     Ok(())
 }
@@ -1389,6 +1453,19 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             Ok(config)
         }
         AppType::GrokBuild => crate::grok_config::read_grok_live_settings(),
+        AppType::KimiCode => {
+            // 与 Codex 分支形态一致的 JSON 包装：{"config": <config.toml 文本>}
+            let config_path = crate::kimi_code_config::get_kimi_code_config_path();
+            if !config_path.exists() {
+                return Err(AppError::localized(
+                    "kimi_code.config.missing",
+                    "Kimi Code 配置文件不存在",
+                    "Kimi Code configuration file not found",
+                ));
+            }
+            let text = crate::kimi_code_config::read_and_validate_kimi_code_config_text()?;
+            Ok(json!({ "config": text }))
+        }
         AppType::OpenClaw => {
             use crate::openclaw_config::{get_openclaw_config_path, read_openclaw_config};
 
@@ -1457,6 +1534,20 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 
     let settings_config = match app_type {
         AppType::Codex => crate::codex_config::read_codex_live_settings()?,
+        AppType::KimiCode => {
+            // 与 read_live_settings 的 KimiCode 分支同形态：{"config": <toml 文本>}；
+            // 存量坏文件由 read_and_validate 拦截，不把坏配置洗白成供应商。
+            let config_path = crate::kimi_code_config::get_kimi_code_config_path();
+            if !config_path.exists() {
+                return Err(AppError::localized(
+                    "kimi_code.config.missing",
+                    "Kimi Code 配置文件不存在",
+                    "Kimi Code configuration file not found",
+                ));
+            }
+            let text = crate::kimi_code_config::read_and_validate_kimi_code_config_text()?;
+            json!({ "config": text })
+        }
         AppType::GrokBuild => {
             let mut settings = crate::grok_config::read_grok_live_settings()?;
             let config = settings
@@ -1581,6 +1672,17 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             AppType::GrokBuild,
         ) {
             log::warn!("Failed to ensure grokbuild-official seed after import: {e}");
+        }
+    }
+
+    // 与 grokbuild 同理：kimi-code-official 种子引入晚于存量库的
+    // `official_providers_seeded` flag，主播种不会再跑，挂在导入成功路径上补。
+    if matches!(app_type, AppType::KimiCode) {
+        if let Err(e) = state.db.ensure_official_seed_by_id(
+            crate::database::KIMI_CODE_OFFICIAL_PROVIDER_ID,
+            AppType::KimiCode,
+        ) {
+            log::warn!("Failed to ensure kimi-code-official seed after import: {e}");
         }
     }
 

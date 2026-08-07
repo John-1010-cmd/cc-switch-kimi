@@ -191,6 +191,19 @@ impl Provider {
                 str_at(settings.get("base_url")),
                 str_at(settings.get("api_key")),
             ),
+            // Kimi Code (config.toml)：从 [providers.*] 各 block 提取首个非空
+            // base_url / api_key；managed:kimi-code block 走 OAuth、无 api_key，
+            // 跳过不报错（托管凭据由订阅额度路径从 credentials/*.json 读）。
+            AppType::KimiCode => {
+                let config_text = settings.get("config").and_then(Value::as_str);
+                let base_url = config_text
+                    .and_then(crate::kimi_code_config::extract_kimi_code_base_url)
+                    .unwrap_or_default();
+                let api_key = config_text
+                    .and_then(crate::kimi_code_config::extract_kimi_code_api_key)
+                    .unwrap_or_default();
+                (base_url, api_key)
+            }
             // OpenClaw (openclaw.json) flattens credentials at the top level, camelCase.
             AppType::OpenClaw => (
                 str_at(settings.get("baseUrl")),

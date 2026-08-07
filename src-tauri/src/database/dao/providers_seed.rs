@@ -14,6 +14,7 @@ use crate::app_config::AppType;
 pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
 pub(crate) const CODEX_OFFICIAL_PROVIDER_ID: &str = "codex-official";
 pub(crate) const GROKBUILD_OFFICIAL_PROVIDER_ID: &str = "grokbuild-official";
+pub(crate) const KIMI_CODE_OFFICIAL_PROVIDER_ID: &str = "kimi-code-official";
 
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
@@ -81,6 +82,18 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         // 空 config = 不写自定义模型表，Grok CLI 回落到自带的 xAI OAuth 登录
         settings_config_json: r#"{"config":""}"#,
     },
+    OfficialProviderSeed {
+        id: KIMI_CODE_OFFICIAL_PROVIDER_ID,
+        app_type: AppType::KimiCode,
+        name: "Kimi For Coding Official",
+        website_url: "https://www.kimi.com/code",
+        icon: "kimi",
+        icon_color: "currentColor",
+        // §2.2 托管模板：managed:kimi-code block 是登录态路由声明（OAuth 凭据在
+        // credentials/，由 CLI /login 管理，cc-switch 不接管）；形态对齐 GrokBuild
+        // 种子的 {"config": <纯 TOML 文本>} 包装。
+        settings_config_json: r#"{"config":"default_model = \"managed:kimi-code/kimi-for-coding\"\n\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\noauth = { storage = \"file\", key = \"oauth/kimi-code\" }\n\n[models.\"managed:kimi-code/kimi-for-coding\"]\nprovider = \"managed:kimi-code\"\nmodel = \"kimi-for-coding\"\nmax_context_size = 262144\n"}"#,
+    },
 ];
 
 /// 判断给定的 provider id 是否属于内置官方种子。
@@ -116,5 +129,48 @@ mod tests {
         assert!(is_official_seed_id(GROKBUILD_OFFICIAL_PROVIDER_ID));
         // 空 config = 官方登录态：切换时不注入自定义模型表
         assert_eq!(seed.settings_config_json, r#"{"config":""}"#);
+    }
+
+    #[test]
+    fn official_seeds_include_kimi_code_managed_template() {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == KIMI_CODE_OFFICIAL_PROVIDER_ID)
+            .expect("kimi code official seed");
+
+        assert_eq!(seed.app_type, AppType::KimiCode);
+        assert!(is_official_seed_id(KIMI_CODE_OFFICIAL_PROVIDER_ID));
+
+        // settings_config 必须是 {"config": "<合法 TOML 文本>"} 单键包装
+        let settings: serde_json::Value =
+            serde_json::from_str(seed.settings_config_json).expect("seed settings is valid JSON");
+        let config_text = settings
+            .get("config")
+            .and_then(|v| v.as_str())
+            .expect("seed settings has config string");
+
+        let doc: toml::Value = toml::from_str(config_text).expect("managed template is valid TOML");
+        assert_eq!(
+            doc.get("default_model").and_then(|v| v.as_str()),
+            Some("managed:kimi-code/kimi-for-coding")
+        );
+        let managed = doc
+            .get("providers")
+            .and_then(|p| p.get("managed:kimi-code"))
+            .expect("managed:kimi-code provider block");
+        assert_eq!(
+            managed.get("base_url").and_then(|v| v.as_str()),
+            Some(crate::kimi_code_config::KIMI_CODE_DEFAULT_BASE_URL)
+        );
+        // 托管 block 走 OAuth，不得内嵌 api_key
+        assert!(managed.get("api_key").is_none());
+        let model = doc
+            .get("models")
+            .and_then(|m| m.get("managed:kimi-code/kimi-for-coding"))
+            .expect("managed model block");
+        assert_eq!(
+            model.get("max_context_size").and_then(|v| v.as_integer()),
+            Some(262144)
+        );
     }
 }
