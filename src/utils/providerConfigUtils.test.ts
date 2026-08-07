@@ -3,12 +3,86 @@ import {
   codexApiFormatFromWireApi,
   isCodexAnthropicWireApi,
   extractCodexModelName,
+  extractKimiCodeCredentials,
   hasCommonConfigSnippet,
   isCodexRemoteCompactionEnabled,
   setCodexModelName,
   setCodexRemoteCompaction,
   updateCommonConfigSnippet,
 } from "./providerConfigUtils";
+
+describe("Kimi Code credentials extraction", () => {
+  it("extracts api_key and base_url from the first [providers.*] table", () => {
+    const config = `default_model = "glm/glm-5.2"
+
+[providers.glm]
+type = "openai"
+api_key = "test-key"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+[models."glm/glm-5.2"]
+provider = "glm"
+model = "glm-5.2"
+max_context_size = 204800
+`;
+    expect(extractKimiCodeCredentials(config)).toEqual({
+      apiKey: "test-key",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    });
+  });
+
+  it("skips OAuth blocks without api_key and takes the first non-empty one", () => {
+    const config = `[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+oauth = { storage = "file", key = "oauth/kimi-code" }
+
+[providers.glm]
+type = "openai"
+api_key = "fallback-key"
+`;
+    // managed block 走 OAuth 无 api_key 被跳过；base_url 仍取第一个非空
+    expect(extractKimiCodeCredentials(config)).toEqual({
+      apiKey: "fallback-key",
+      baseUrl: "https://api.kimi.com/coding/v1",
+    });
+  });
+
+  it("returns undefined fields for OAuth-only managed config", () => {
+    const config = `default_model = "managed:kimi-code/kimi-for-coding"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+oauth = { storage = "file", key = "oauth/kimi-code" }
+`;
+    expect(extractKimiCodeCredentials(config)).toEqual({
+      apiKey: undefined,
+      baseUrl: "https://api.kimi.com/coding/v1",
+    });
+  });
+
+  it("treats an empty (unfilled) api_key as missing", () => {
+    const config = `[providers.kimi]
+type = "kimi"
+api_key = ""
+base_url = "https://api.kimi.com/coding/v1"
+`;
+    expect(extractKimiCodeCredentials(config)).toEqual({
+      apiKey: undefined,
+      baseUrl: "https://api.kimi.com/coding/v1",
+    });
+  });
+
+  it("returns undefined safely for invalid or provider-less input", () => {
+    const empty = { apiKey: undefined, baseUrl: undefined };
+    expect(extractKimiCodeCredentials("not = [valid toml")).toEqual(empty);
+    expect(extractKimiCodeCredentials('default_model = "a/b"')).toEqual(empty);
+    expect(extractKimiCodeCredentials("")).toEqual(empty);
+    expect(extractKimiCodeCredentials(undefined)).toEqual(empty);
+    expect(extractKimiCodeCredentials(null)).toEqual(empty);
+  });
+});
 
 describe("Codex wire API helpers", () => {
   it("recognizes Anthropic Messages aliases", () => {

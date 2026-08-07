@@ -1337,12 +1337,65 @@ pub async fn get_coding_plan_quota(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_afp_tiers, parse_coding_plan_tiers, parse_minimax_tiers, parse_zhipu_token_tiers,
-        query_zhipu_team_at, volcengine_canonical_query, volcengine_is_auth_error_code,
-        volcengine_region, volcengine_response_error, volcengine_sign, zhipu_quota_base,
-        TIER_FIVE_HOUR, TIER_MONTHLY, TIER_WEEKLY_LIMIT,
+        detect_provider, parse_afp_tiers, parse_coding_plan_tiers, parse_minimax_tiers,
+        parse_zhipu_token_tiers, query_zhipu_team_at, volcengine_canonical_query,
+        volcengine_is_auth_error_code, volcengine_region, volcengine_response_error,
+        volcengine_sign, zhipu_quota_base, CodingPlanProvider, TIER_FIVE_HOUR, TIER_MONTHLY,
+        TIER_WEEKLY_LIMIT,
     };
     use serde_json::json;
+
+    // ── detect_provider：M4（03 号文档 §2）十条预设 base_url 矩阵 ──
+    // 命中：kimi / zhipu / minimax 套餐额度可查；未命中（None）：按 §4.3
+    // 走 unsupported 降级（DeepSeek 余额、MiMo 仅本地统计）。
+
+    #[test]
+    fn detect_provider_kimi_coding_url() {
+        assert!(matches!(
+            detect_provider("https://api.kimi.com/coding/v1"),
+            Some(CodingPlanProvider::Kimi)
+        ));
+    }
+
+    #[test]
+    fn detect_provider_zhipu_urls() {
+        assert!(matches!(
+            detect_provider("https://open.bigmodel.cn/api/paas/v4"),
+            Some(CodingPlanProvider::ZhipuCn)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.z.ai/api/paas/v4"),
+            Some(CodingPlanProvider::ZhipuEn)
+        ));
+    }
+
+    #[test]
+    fn detect_provider_minimax_urls() {
+        assert!(matches!(
+            detect_provider("https://api.minimaxi.com/v1"),
+            Some(CodingPlanProvider::MiniMaxCn)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.minimax.io/v1"),
+            Some(CodingPlanProvider::MiniMaxEn)
+        ));
+    }
+
+    #[test]
+    fn detect_provider_non_plan_preset_urls_do_not_match() {
+        // M4 §2 矩阵中无套餐额度的条目：一律不命中，走 unsupported 降级。
+        // token-plan-cn.xiaomimimo.com 不得误命中 minimax 任何分支。
+        for url in [
+            "https://api.moonshot.ai/v1",                    // Kimi 开放平台（按量）
+            "https://chatgpt.com/backend-api/codex",         // Codex
+            "https://api.deepseek.com/v1",                   // DeepSeek（仅余额）
+            "https://api.xiaomimimo.com/v1",                 // MiMo（无额度 API）
+            "https://token-plan-cn.xiaomimimo.com/v1",       // MiMo Token Plan
+            "http://127.0.0.1:15721/openai",                 // 本地代理
+        ] {
+            assert!(detect_provider(url).is_none(), "{url} 不应命中");
+        }
+    }
 
     #[test]
     fn zhipu_new_plan_two_tiers_sorted_by_reset_time() {

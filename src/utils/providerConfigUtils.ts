@@ -1176,6 +1176,71 @@ export const extractCodexBaseUrl = (
   }
 };
 
+// ========== Kimi Code credentials utils ==========
+
+// 从 kimi-code 的 TOML 配置文本（settingsConfig.config）中提取 base_url：
+// 取 [providers.*] 第一个表的 base_url。解析失败/缺失一律返回 null，不抛异常。
+// 与后端 kimi_code_config::extract_kimi_code_base_url 同效（首个非空 base_url）。
+export const extractKimiCodeBaseUrl = (
+  configText: string | undefined | null,
+): string | null => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return null;
+
+    const parsed = parseToml(text) as Record<string, any>;
+    const providers = parsed.providers;
+    if (!isPlainObject(providers)) return null;
+
+    for (const table of Object.values(providers)) {
+      if (isPlainObject(table) && typeof table.base_url === "string") {
+        const baseUrl = table.base_url.trim();
+        if (baseUrl) return baseUrl;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+// 从 kimi-code 的 TOML 配置文本中提取 api_key：取 [providers.*] 第一个带非空
+// api_key 的表。managed:kimi-code block 走 OAuth、没有 api_key，自然被跳过，
+// 不视为错误（与后端 kimi_code_config::extract_kimi_code_api_key 同效）。
+export const extractKimiCodeApiKey = (
+  configText: string | undefined | null,
+): string | null => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return null;
+
+    const parsed = parseToml(text) as Record<string, any>;
+    const providers = parsed.providers;
+    if (!isPlainObject(providers)) return null;
+
+    for (const table of Object.values(providers)) {
+      if (isPlainObject(table) && typeof table.api_key === "string") {
+        const apiKey = table.api_key.trim();
+        if (apiKey) return apiKey;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+// 一次取回 kimi-code 的 apiKey / baseUrl，供 UsageScriptModal 的
+// getProviderCredentials 使用（null 归一为 undefined，与其他分支的返回形态对齐）
+export const extractKimiCodeCredentials = (
+  configText: string | undefined | null,
+): { apiKey: string | undefined; baseUrl: string | undefined } => ({
+  apiKey: extractKimiCodeApiKey(configText) ?? undefined,
+  baseUrl: extractKimiCodeBaseUrl(configText) ?? undefined,
+});
+
 // 从 Codex 的 TOML 配置文本中提取 experimental_bearer_token（兼容 Mobile 模式）
 export const extractCodexExperimentalBearerToken = (
   configText: string | undefined | null,

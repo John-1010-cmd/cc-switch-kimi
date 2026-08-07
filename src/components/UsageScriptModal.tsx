@@ -13,6 +13,7 @@ import { useDarkMode } from "@/hooks/useDarkMode";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
+  extractKimiCodeCredentials,
 } from "@/utils/providerConfigUtils";
 import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
 import JsonEditor from "./JsonEditor";
@@ -160,7 +161,8 @@ function detectBalanceProvider(baseUrl: string | undefined): boolean {
 }
 
 function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
-  if (!["claude", "codex", "gemini", "grokbuild"].includes(appId)) return false;
+  if (!["claude", "codex", "gemini", "grokbuild", "kimi-code"].includes(appId))
+    return false;
   if (provider.category === "official") return true;
 
   const config = provider.settingsConfig as Record<string, any>;
@@ -278,6 +280,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey: grokConfig.apiKey,
             baseUrl: grokConfig.baseUrl,
           };
+        } else if (appId === "kimi-code") {
+          // Kimi Code: settingsConfig.config 是整份 config.toml 文本，凭据在
+          // [providers.*] 表的 base_url / api_key（语义镜像后端 resolver）
+          return extractKimiCodeCredentials((config as any).config);
         } else if (appId === "hermes") {
           // Hermes: settingsConfig 顶层扁平（snake_case，对应 config.yaml）
           return {

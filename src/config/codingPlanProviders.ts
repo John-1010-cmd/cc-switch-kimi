@@ -8,6 +8,10 @@
  */
 import { createUsageScript } from "@/types";
 import { TEMPLATE_TYPES } from "@/config/constants";
+import { extractKimiCodeBaseUrl } from "@/utils/providerConfigUtils";
+
+/** DeepSeek 官方余额端点（与 UsageScriptModal 的 detectBalanceProvider 正则一致） */
+const DEEPSEEK_BALANCE_PATTERN = /api\.deepseek\.com/i;
 
 export interface CodingPlanProviderEntry {
   /** 与后端 QuotaTier 的 `codingPlanProvider` 取值对齐 */
@@ -67,13 +71,15 @@ export function detectCodingPlanProvider(
 }
 
 /**
- * 新建 Claude 供应商时，若 `ANTHROPIC_BASE_URL` 命中 Coding Plan 路由表，
- * 自动把 `meta.usage_script` 标记为 token_plan 并启用。
+ * 新建供应商时，按 app 自动注入用量脚本配置：
  *
+ * - Claude：`settingsConfig.env.ANTHROPIC_BASE_URL` 命中 Coding Plan 路由表时，
+ *   注入 token_plan（带 codingPlanProvider）
+ * - kimi-code：`settingsConfig.config`（整份 config.toml）的 `[providers.*]`
+ *   base_url 命中 Coding Plan 路由表时注入 token_plan；命中 DeepSeek 官方余额
+ *   端点时注入 balance；其余（mimo/moonshot/本地代理等）不注入
  * - 仅在 `meta.usage_script` 完全缺失时注入，不覆盖用户/UsageScriptModal 已有配置
- * - 仅对 Claude app 生效：后端 `commands/provider.rs` 的 token_plan 分支只处理 Claude
- *   supplier 的 `settings_config.env.ANTHROPIC_BASE_URL`
- * - code 置空：Rust 端走专用 `coding_plan::get_coding_plan_quota`，不执行 JS 脚本
+ * - code 置空：Rust 端走专用查询路径（coding_plan / balance），不执行 JS 脚本
  */
 export function injectCodingPlanUsageScript<
   T extends {
@@ -81,24 +87,44 @@ export function injectCodingPlanUsageScript<
     meta?: Record<string, any>;
   },
 >(appId: string, provider: T): T {
-  if (appId !== "claude") return provider;
+  if (appId !== "claude" && appId !== "kimi-code") return provider;
   if (provider.meta?.usage_script) return provider;
 
-  const baseUrl = provider.settingsConfig?.env?.ANTHROPIC_BASE_URL;
-  const codingPlanProvider = detectCodingPlanProvider(
-    typeof baseUrl === "string" ? baseUrl : null,
-  );
-  if (!codingPlanProvider) return provider;
+  const baseUrl =
+    appId === "claude"
+      ? provider.settingsConfig?.env?.ANTHROPIC_BASE_URL
+      : extractKimiCodeBaseUrl(provider.settingsConfig?.config);
+  if (typeof baseUrl !== "string" || !baseUrl) return provider;
 
-  return {
-    ...provider,
-    meta: {
-      ...(provider.meta ?? {}),
-      usage_script: createUsageScript({
-        enabled: true,
-        templateType: TEMPLATE_TYPES.TOKEN_PLAN,
-        codingPlanProvider,
-      }),
-    },
-  };
+  const codingPlanProvider = detectCodingPlanProvider(baseUrl);
+  if (codingPlanProvider) {
+    return {
+      ...provider,
+      meta: {
+        ...(provider.meta ?? {}),
+        usage_script: createUsageScript({
+          enabled: true,
+          templateType: TEMPLATE_TYPES.TOKEN_PLAN,
+          codingPlanProvider,
+        }),
+      },
+    };
+  }
+
+  // DeepSeek 官方余额端点（仅 kimi-code 分支；保持 claude 既有行为不变）：
+  // 注入 balance 模板，与 UsageScriptModal 的自动选择逻辑对齐，balance 模板无额外字段
+  if (appId === "kimi-code" && DEEPSEEK_BALANCE_PATTERN.test(baseUrl)) {
+    return {
+      ...provider,
+      meta: {
+        ...(provider.meta ?? {}),
+        usage_script: createUsageScript({
+          enabled: true,
+          templateType: TEMPLATE_TYPES.BALANCE,
+        }),
+      },
+    };
+  }
+
+  return provider;
 }

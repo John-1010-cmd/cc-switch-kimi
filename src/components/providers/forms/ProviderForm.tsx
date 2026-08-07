@@ -50,6 +50,10 @@ import {
   hermesProviderPresets,
   type HermesProviderPreset,
 } from "@/config/hermesProviderPresets";
+import {
+  kimiCodeProviderPresets,
+  type KimiCodeProviderPreset,
+} from "@/config/kimiCodeProviderPresets";
 import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { OpenClawFormFields } from "./OpenClawFormFields";
 import { HermesFormFields } from "./HermesFormFields";
@@ -68,6 +72,10 @@ import {
 } from "@/utils/providerConfigUtils";
 import { isNonNegativeDecimalString } from "@/types/usage";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
+import {
+  KIMI_CODE_DEFAULT_CONFIG_TOML,
+  KIMI_CODE_DEFAULT_SETTINGS_CONFIG,
+} from "@/config/kimiCode";
 import CodexConfigEditor from "./CodexConfigEditor";
 import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
@@ -132,7 +140,8 @@ type PresetEntry = {
     | GeminiProviderPreset
     | OpenCodeProviderPreset
     | OpenClawProviderPreset
-    | HermesProviderPreset;
+    | HermesProviderPreset
+    | KimiCodeProviderPreset;
 };
 
 export const normalizeCodexCatalogModelsForSave = (
@@ -375,6 +384,7 @@ function ProviderFormFull({
         initialData?.meta?.localProxyRequestOverrides?.body,
       ),
     );
+    setKimiCodeConfig(initialKimiCodeConfig());
   }, [appId, initialData, supportsFullUrl]);
 
   const defaultValues: ProviderFormData = useMemo(
@@ -394,7 +404,9 @@ function ProviderFormFull({
                 ? OPENCLAW_DEFAULT_CONFIG
                 : appId === "hermes"
                   ? HERMES_DEFAULT_CONFIG
-                  : CLAUDE_DEFAULT_CONFIG,
+                  : appId === "kimi-code"
+                    ? KIMI_CODE_DEFAULT_SETTINGS_CONFIG
+                    : CLAUDE_DEFAULT_CONFIG,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
@@ -629,6 +641,30 @@ function ProviderFormFull({
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
 
+  // Kimi Code：settingsConfig 固定为 {"config": "<整份 config.toml 文本>"}，
+  // 这里用独立 state 暂存 TOML 文本（复用 Codex 的 TOML 校验 hook，无 auth 键）
+  const initialKimiCodeConfig = () =>
+    appId === "kimi-code" &&
+    typeof initialData?.settingsConfig?.config === "string"
+      ? initialData.settingsConfig.config
+      : KIMI_CODE_DEFAULT_CONFIG_TOML;
+  const [kimiCodeConfig, setKimiCodeConfig] = useState<string>(
+    initialKimiCodeConfig,
+  );
+  const {
+    configError: kimiCodeConfigError,
+    validateToml: validateKimiCodeToml,
+    debouncedValidate: debouncedValidateKimiCodeToml,
+  } = useCodexTomlValidation();
+
+  const handleKimiCodeConfigChange = useCallback(
+    (value: string) => {
+      setKimiCodeConfig(value);
+      debouncedValidateKimiCodeToml(value);
+    },
+    [debouncedValidateKimiCodeToml],
+  );
+
   const handleCodexConfigChange = useCallback(
     (value: string) => {
       originalHandleCodexConfigChange(value);
@@ -706,6 +742,11 @@ function ProviderFormFull({
     } else if (appId === "hermes") {
       return hermesProviderPresets.map<PresetEntry>((preset, index) => ({
         id: `hermes-${index}`,
+        preset,
+      }));
+    } else if (appId === "kimi-code") {
+      return kimiCodeProviderPresets.map<PresetEntry>((preset, index) => ({
+        id: `kimi-code-${index}`,
         preset,
       }));
     }
@@ -1075,6 +1116,19 @@ function ProviderFormFull({
       return;
     }
 
+    // Kimi Code：TOML 必填 + 语法校验（硬拒绝，坏配置不进入保存/切换链路，
+    // 避免覆写 live config.toml；空配置同样拒绝）
+    if (appId === "kimi-code") {
+      if (!kimiCodeConfig.trim()) {
+        toast.error(t("kimiCode.form.configRequired"));
+        return;
+      }
+      if (!validateKimiCodeToml(kimiCodeConfig)) {
+        toast.error(t("kimiCode.form.tomlInvalid"));
+        return;
+      }
+    }
+
     // opencode / openclaw / hermes: providerKey 相关
     // A 类（空）归到 issues；B 类（正则不合法 / 重复 / 状态加载中）仍硬拒绝
     const keyPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -1421,6 +1475,9 @@ function ProviderFormFull({
       } catch (err) {
         settingsConfig = values.settingsConfig.trim();
       }
+    } else if (appId === "kimi-code") {
+      // {config: "<整份 config.toml 文本>"} 单键 JSON（无 auth 键）
+      settingsConfig = JSON.stringify({ config: kimiCodeConfig });
     } else if (
       appId === "opencode" &&
       (category === "omo" || category === "omo-slim")
@@ -1788,6 +1845,9 @@ function ProviderFormFull({
       if (appId === "hermes") {
         hermesForm.resetHermesState();
       }
+      if (appId === "kimi-code") {
+        setKimiCodeConfig(KIMI_CODE_DEFAULT_CONFIG_TOML);
+      }
       return;
     }
 
@@ -1905,6 +1965,27 @@ function ProviderFormFull({
       const config = preset.settingsConfig;
 
       hermesForm.resetHermesState(config);
+
+      form.reset({
+        name: preset.nameKey ? t(preset.nameKey) : preset.name,
+        websiteUrl: preset.websiteUrl ?? "",
+        settingsConfig: JSON.stringify(config, null, 2),
+        icon: preset.icon ?? "",
+        iconColor: preset.iconColor ?? "",
+      });
+      return;
+    }
+
+    // Kimi Code preset handling：模板 TOML 经 applyTemplateValues 替换
+    // ${apiKey} 占位符（默认留空待填）后灌入 TOML 编辑器
+    if (appId === "kimi-code") {
+      const preset = entry.preset as KimiCodeProviderPreset;
+      const config = applyTemplateValues(
+        preset.settingsConfig,
+        preset.templateValues,
+      );
+
+      setKimiCodeConfig(config.config ?? "");
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2448,8 +2529,36 @@ function ProviderFormFull({
             />
           )}
 
-          {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
-          {appId === "codex" ? (
+          {/* 配置编辑器：Kimi Code/Codex/Claude/Gemini 分别使用不同的编辑器 */}
+          {appId === "kimi-code" ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="kimiCodeConfig">
+                  {t("kimiCode.form.configToml")}
+                </Label>
+                <JsonEditor
+                  value={kimiCodeConfig}
+                  onChange={handleKimiCodeConfigChange}
+                  placeholder=""
+                  rows={12}
+                  showValidation={false}
+                  language="javascript"
+                  darkMode={isDarkMode}
+                />
+                {kimiCodeConfigError && (
+                  <p className="text-xs text-red-500 dark:text-red-400">
+                    {kimiCodeConfigError}
+                  </p>
+                )}
+                {!kimiCodeConfigError && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("kimiCode.form.managedLoginHint")}
+                  </p>
+                )}
+              </div>
+              {settingsConfigErrorField}
+            </>
+          ) : appId === "codex" ? (
             <>
               <CodexConfigEditor
                 authValue={codexAuth}
