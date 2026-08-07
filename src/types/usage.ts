@@ -162,6 +162,21 @@ export interface ProviderLimitStatus {
   monthlyExceeded: boolean;
 }
 
+/**
+ * kimi-code 实时指标（get_kimi_realtime_metrics，纯内存读取，可秒级轮询）。
+ *
+ * `tps` 为最近 5 个有效样本的中位生成速度（tokens/s，已取整），无样本为 null
+ * → UI 显示 "—"；`cacheHitRate5m` 为最近 5 分钟缓存命中率（0–100 百分比），
+ * 窗口总输入为 0 时 null → UI 显示 "—"（绝不显示 0%）。
+ */
+export interface KimiRealtimeMetrics {
+  tps: number | null;
+  sampleCount: number;
+  activeSessions: number;
+  cacheHitRate5m: number | null;
+  lastEventAt: number | null;
+}
+
 export type UsageRangePreset = "today" | "1d" | "7d" | "14d" | "30d" | "custom";
 
 export interface UsageRangeSelection {
@@ -188,7 +203,13 @@ export interface UsageRangeSelection {
  * `opencode` / `openclaw` / `hermes` have no proxy handler at all — they
  * appear only as managed apps elsewhere.
  */
-export type AppType = "claude" | "codex" | "gemini" | "grokbuild" | "opencode";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "grokbuild"
+  | "opencode"
+  | "kimi-code";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -198,17 +219,21 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "gemini",
   "grokbuild",
   "opencode",
+  "kimi-code",
 ];
 
 /**
- * App types whose proxy uses an OpenAI-style protocol. Two consequences:
+ * App types whose `inputTokens` already includes the cached portion (must
+ * subtract `cacheReadTokens` to get fresh-input semantics — see
+ * [getFreshInputTokens]).
  *
- * 1. `inputTokens` already includes the cached portion (must subtract
- *    `cacheReadTokens` to get fresh-input semantics — see
- *    [getFreshInputTokens]).
- * 2. The protocol does not report cache _creation_ separately, only cache
- *    _reads_. So `cacheCreationTokens` is always 0 for these app types and
- *    the UI should label it as N/A rather than 0.
+ * For the OpenAI-style proxy apps (codex/gemini/grokbuild) there is a second
+ * consequence: the protocol does not report cache _creation_ separately, only
+ * cache _reads_, so `cacheCreationTokens` is always 0 and the UI labels it as
+ * N/A rather than 0. That "always 0 → N/A" assumption applies ONLY to those
+ * OpenAI-protocol proxy apps: `kimi-code` speaks the Anthropic protocol and
+ * reports real cache-creation tokens, so its N/A state is data-driven (see
+ * `deriveCacheWriteState` in UsageHero).
  *
  * Mirror of the Rust `CACHE_INCLUSIVE_APP_TYPES` whitelist.
  */
@@ -216,6 +241,7 @@ export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
   "codex",
   "gemini",
   "grokbuild",
+  "kimi-code",
 ]);
 
 /** Subset of request-log fields needed to derive cache-normalized input. */

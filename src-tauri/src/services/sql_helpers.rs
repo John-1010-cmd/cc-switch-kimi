@@ -20,7 +20,14 @@
 /// （usage_stats 成本重算）与展示侧（本文件的 SQL 归一）都必须引用这里，
 /// 防止同一语义散落多处后新增 app 时漏改（grokbuild 曾在回填侧漏掉）。
 /// 前端 `src/types/usage.ts` 的同名常量是跨语言的对应物，改动须同步。
-pub(crate) const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini", "grokbuild"];
+///
+/// kimi-code 走 Anthropic 协议，四分量齐全：inputCacheCreation 有真实值，
+/// 入库 input_tokens 为总输入（semantics=TOTAL），因此列入本白名单由
+/// fresh_input_sql 的 TOTAL 分支扣减。注意 "cacheCreation 恒 0、UI 显示 N/A"
+/// 的假设仅对 OpenAI 协议 proxy app（codex/gemini/grokbuild）成立，
+/// 对 kimi-code 不成立——其 cache-write 的 N/A 判定须按数据驱动。
+pub(crate) const CACHE_INCLUSIVE_APP_TYPES: &[&str] =
+    &["codex", "gemini", "grokbuild", "kimi-code"];
 
 /// `app_type` 的存储 `input_tokens` 是否已包含 cache read/write。
 pub(crate) fn is_cache_inclusive_app(app_type: &str) -> bool {

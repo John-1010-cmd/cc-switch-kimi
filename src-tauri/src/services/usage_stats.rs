@@ -308,7 +308,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
         dedup_app_type_match_sql("proxy_dedup.app_type", &format!("{log_alias}.app_type"));
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'kimi_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup

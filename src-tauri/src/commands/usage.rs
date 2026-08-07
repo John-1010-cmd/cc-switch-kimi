@@ -299,6 +299,15 @@ pub fn get_usage_data_sources(
     crate::services::session_usage::get_data_source_breakdown(&state.db)
 }
 
+/// 获取 Kimi Code 实时监控指标（TPS 中位数 / 5min 缓存命中率 / 活跃会话数）
+///
+/// 纯内存态读取（`session_usage_kimi` 的实时层喂入），不查 DB、不发网络请求，
+/// 可供前端秒级轮询与托盘标题高频调用。
+#[tauri::command]
+pub fn get_kimi_realtime_metrics() -> crate::services::session_usage_kimi::KimiRealtimeMetrics {
+    crate::services::session_usage_kimi::get_kimi_realtime_metrics()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
