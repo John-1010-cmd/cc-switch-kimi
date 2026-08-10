@@ -65,18 +65,6 @@ const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
     accent: "text-neutral-700 dark:text-neutral-300",
     iconBg: "bg-neutral-500/10",
   },
-  gemini: {
-    accent: "text-sky-600 dark:text-sky-400",
-    iconBg: "bg-sky-500/10",
-  },
-  grokbuild: {
-    accent: "text-rose-600 dark:text-rose-400",
-    iconBg: "bg-rose-500/10",
-  },
-  opencode: {
-    accent: "text-purple-600 dark:text-purple-400",
-    iconBg: "bg-purple-500/10",
-  },
   "kimi-code": {
     accent: "text-teal-600 dark:text-teal-400",
     iconBg: "bg-teal-500/10",
@@ -139,7 +127,7 @@ type CacheWriteState = "ok" | "partial" | "na";
 
 /**
  * Anthropic-style protocols report cache creation; OpenAI-style protocols
- * (Codex/Gemini) do not — so a mix shows the number with a caveat, all-OpenAI
+ * (Codex) do not — so a mix shows the number with a caveat, all-OpenAI
  * shows N/A. kimi-code is the exception: it sits in CACHE_INCLUSIVE_APP_TYPES
  * but speaks the Anthropic protocol and reports real cache-creation tokens,
  * so its N/A state is data-driven (N/A only while no cache-creation data has

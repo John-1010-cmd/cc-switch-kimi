@@ -213,8 +213,6 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
          WHEN '_session' THEN 'Claude (Session)' \
          WHEN '_codex_session' THEN 'Codex (Session)' \
          WHEN '_gemini_session' THEN 'Gemini (Session)' \
-         WHEN '_opencode_session' THEN 'OpenCode (Session)' \
-         WHEN '_grok_session' THEN 'Grok Build (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -308,7 +306,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
         dedup_app_type_match_sql("proxy_dedup.app_type", &format!("{log_alias}.app_type"));
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'kimi_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'kimi_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
@@ -323,7 +321,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
                       OR (
                           {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session')
                       )
                   )
                   AND proxy_dedup.created_at BETWEEN
@@ -383,7 +381,7 @@ pub(crate) fn has_matching_proxy_usage_log(
     key: &DedupKey,
 ) -> Result<bool, AppError> {
     let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
+        matches!(key.app_type, "codex" | "gemini") && key.cache_creation_tokens == 0;
 
     let l_data_source = data_source_expr("l");
     let app_type_match = dedup_app_type_match_sql("l.app_type", "?1");
@@ -424,40 +422,6 @@ pub(crate) fn has_matching_proxy_usage_log(
         |row| row.get::<_, bool>(0),
     )
     .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))
-}
-
-/// grokbuild 会话导入的接管活动守卫：给定时刻 ±窗口内存在任何 grokbuild
-/// 代理直录行，即认为当时处于代理接管态，会话事件应整体跳过——同一请求
-/// 已由代理逐请求记账，会话侧再入账必双算。
-///
-/// 不复用 [`has_matching_proxy_usage_log`] 的指纹匹配：Grok 会话事件是
-/// 逐轮聚合值，与代理逐请求行的 token 值结构性不相等，指纹永不命中。
-/// 这里按"接管态检测"而非"行匹配"设计，故不过滤 status_code——失败的
-/// 代理请求同样证明流量正走代理。
-///
-/// 已知局限（有意取舍，方向保守只漏不双）：窗口不含 session 维度，任一
-/// grokbuild 代理行会给 ±窗口内的全部会话事件投下阴影——接管/官方两态在
-/// 十分钟内交替或并行使用时，官方侧轮次会被跳过（漏记而非双算）。
-pub(crate) fn has_recent_grokbuild_proxy_activity(
-    conn: &Connection,
-    created_at: i64,
-) -> Result<bool, AppError> {
-    let l_data_source = data_source_expr("l");
-    let sql = format!(
-        "SELECT EXISTS (
-            SELECT 1
-            FROM proxy_request_logs l
-            WHERE {l_data_source} = 'proxy'
-              AND l.app_type = 'grokbuild'
-              AND l.created_at BETWEEN ?1 - ?2 AND ?1 + ?2
-        )"
-    );
-    conn.query_row(
-        &sql,
-        params![created_at, SESSION_PROXY_DEDUP_WINDOW_SECONDS],
-        |row| row.get::<_, bool>(0),
-    )
-    .map_err(|e| AppError::Database(format!("查询 Grok 接管活动失败: {e}")))
 }
 
 pub(crate) fn has_suspected_codex_session_duplicate(
@@ -2185,7 +2149,7 @@ fn clean_model_id_for_pricing(model_id: &str) -> String {
         .to_ascii_lowercase();
 
     normalized
-        .trim_end_matches(crate::claude_desktop_config::ONE_M_CONTEXT_MARKER)
+        .trim_end_matches(crate::proxy::model_mapper::ONE_M_CONTEXT_MARKER)
         .trim()
         .to_string()
 }
@@ -2724,53 +2688,6 @@ mod tests {
             ]
         );
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_backfill_deducts_cache_read_for_grokbuild_total_rows() -> Result<(), AppError> {
-        // 回归：回填侧的 cache-inclusive 判定曾硬编码 codex|gemini 漏掉
-        // grokbuild，导致 TOTAL 行按全量 input 计价、cache_read 双算。
-        // 判定收敛到 sql_helpers::is_cache_inclusive_app 后按 450 fresh 计价。
-        let db = Database::memory()?;
-        {
-            let conn = lock_conn!(db.conn);
-            insert_usage_log(
-                &conn,
-                "grokbuild-total-backfill",
-                "grokbuild",
-                "_grok_session",
-                "grok-4.5",
-                "grok_session",
-                1000,
-                700,
-                100,
-                250,
-                0,
-                200,
-                "0",
-            )?;
-            conn.execute(
-                "UPDATE proxy_request_logs
-                 SET input_token_semantics = ?1
-                 WHERE request_id = 'grokbuild-total-backfill'",
-                [INPUT_TOKEN_SEMANTICS_TOTAL],
-            )?;
-        }
-
-        assert_eq!(db.backfill_missing_usage_costs()?, 1);
-
-        let conn = lock_conn!(db.conn);
-        let (input_cost, cache_read_cost, total_cost): (String, String, String) = conn.query_row(
-            "SELECT input_cost_usd, cache_read_cost_usd, total_cost_usd
-             FROM proxy_request_logs WHERE request_id = 'grokbuild-total-backfill'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        // grok-4.5 定价 2/6/0.50：input = (700-250)×2/1M，cache_read = 250×0.5/1M
-        assert_eq!(input_cost, "0.000900");
-        assert_eq!(cache_read_cost, "0.000125");
-        assert_eq!(total_cost, "0.001625");
         Ok(())
     }
 
@@ -3833,37 +3750,6 @@ mod tests {
         assert_eq!(stats[0].provider_id, "p1");
         assert_eq!(stats[0].request_count, 1);
         assert_eq!(stats[0].total_tokens, 275);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_provider_stats_labels_opencode_session_provider() -> Result<(), AppError> {
-        let db = Database::memory()?;
-
-        {
-            let conn = lock_conn!(db.conn);
-            insert_usage_log(
-                &conn,
-                "opencode-session",
-                "opencode",
-                "_opencode_session",
-                "opencode-model",
-                "opencode_session",
-                1000,
-                100,
-                50,
-                0,
-                0,
-                200,
-                "0.01",
-            )?;
-        }
-
-        let stats = db.get_provider_stats(None, None, Some("opencode"), None, None)?;
-        assert_eq!(stats.len(), 1);
-        assert_eq!(stats[0].provider_id, "_opencode_session");
-        assert_eq!(stats[0].provider_name, "OpenCode (Session)");
 
         Ok(())
     }

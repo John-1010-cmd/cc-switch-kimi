@@ -15,7 +15,7 @@
 //!
 //! 并行安全：`KIMI_CODE_HOME` 是进程级环境变量。本文件所有用例先抢
 //! `support::test_mutex()` 串行执行，并用 `KimiCodeHomeGuard` 在用例结束（含 panic）
-//! 后恢复原值——与 `hermes_roundtrip.rs` 处理 `hermes_config_dir` 的模式一致。
+//! 后恢复原值。
 //! 不同测试二进制（lib 单测中 kimi_code_config 的 env_lock 用例）是独立进程，
 //! 环境变量互不可见，无跨二进制污染。
 

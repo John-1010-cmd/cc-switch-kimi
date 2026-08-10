@@ -42,7 +42,7 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
   onClose,
   existingIds = [],
   defaultFormat = "json",
-  defaultEnabledApps = ["claude", "codex", "gemini", "grokbuild"],
+  defaultEnabledApps = ["claude", "codex"],
 }) => {
   const { t } = useTranslation();
   const { formatTomlError, validateTomlConfig, validateJsonConfig } =
@@ -64,28 +64,17 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
   const [enabledApps, setEnabledApps] = useState<{
     claude: boolean;
     codex: boolean;
-    gemini: boolean;
-    grokbuild: boolean;
-    opencode: boolean;
-    openclaw: boolean;
-    hermes: boolean;
     "kimi-code": boolean;
   }>(() => {
     if (initialData?.apps) {
       return {
         ...initialData.apps,
-        grokbuild: initialData.apps.grokbuild ?? false,
         "kimi-code": initialData.apps["kimi-code"] ?? false,
       };
     }
     return {
       claude: defaultEnabledApps.includes("claude"),
       codex: defaultEnabledApps.includes("codex"),
-      gemini: defaultEnabledApps.includes("gemini"),
-      grokbuild: defaultEnabledApps.includes("grokbuild"),
-      opencode: defaultEnabledApps.includes("opencode"),
-      openclaw: defaultEnabledApps.includes("openclaw"),
-      hermes: defaultEnabledApps.includes("hermes"),
       "kimi-code": defaultEnabledApps.includes("kimi-code"),
     };
   });
@@ -555,70 +544,6 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
                     className="text-sm text-foreground cursor-pointer select-none"
                   >
                     {t("mcp.unifiedPanel.apps.codex")}
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-gemini"
-                    checked={enabledApps.gemini}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, gemini: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-gemini"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.gemini")}
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-grokbuild"
-                    checked={enabledApps.grokbuild}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, grokbuild: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-grokbuild"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.grokbuild")}
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-opencode"
-                    checked={enabledApps.opencode}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, opencode: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-opencode"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.opencode")}
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="enable-hermes"
-                    checked={enabledApps.hermes}
-                    onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, hermes: checked })
-                    }
-                  />
-                  <label
-                    htmlFor="enable-hermes"
-                    className="text-sm text-foreground cursor-pointer select-none"
-                  >
-                    {t("mcp.unifiedPanel.apps.hermes")}
                   </label>
                 </div>
 

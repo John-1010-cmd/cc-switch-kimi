@@ -228,9 +228,7 @@ export function useSetAutoFailoverEnabled() {
           ? "Claude"
           : variables.appType === "codex"
             ? "Codex"
-            : variables.appType === "grokbuild"
-              ? "Grok Build"
-              : "Gemini";
+            : "Unknown";
 
       toast.success(
         variables.enabled

@@ -14,8 +14,8 @@ export interface TemplateValueConfig {
  * 预设供应商的视觉主题配置
  */
 export interface PresetTheme {
-  /** 图标类型：'claude' | 'codex' | 'gemini' | 'generic' */
-  icon?: "claude" | "codex" | "gemini" | "generic";
+  /** 图标类型：'claude' | 'codex' | 'generic' */
+  icon?: "claude" | "codex" | "generic";
   /** 背景色（选中状态），支持 Tailwind 类名或 hex 颜色 */
   backgroundColor?: string;
   /** 文字色（选中状态），支持 Tailwind 类名或 hex 颜色 */
@@ -50,17 +50,15 @@ export interface ProviderPreset {
   // - "anthropic" (默认): Anthropic Messages API 格式，直接透传
   // - "openai_chat": OpenAI Chat Completions 格式，需要格式转换
   // - "openai_responses": OpenAI Responses API 格式，需要格式转换
-  // - "gemini_native": Gemini Native generateContent API 格式，需要格式转换
   apiFormat?:
     | "anthropic"
     | "openai_chat"
-    | "openai_responses"
-    | "gemini_native";
+    | "openai_responses";
 
   // 供应商类型标识（用于特殊供应商检测）
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
-  providerType?: "github_copilot" | "codex_oauth" | "xai_oauth";
+  providerType?: "github_copilot" | "codex_oauth";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -118,7 +116,7 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/",
         ANTHROPIC_AUTH_TOKEN: "",
         // CLAUDE_CODE_MAX_CONTEXT_TOKENS 只对非 claude- 前缀模型 id 生效，
-        // 必须显式路由端点别名 kimi-for-coding（与 codex/hermes/opencode 预设一致）
+        // 必须显式路由端点别名 kimi-for-coding（与 codex/opencode 预设一致）
         ANTHROPIC_MODEL: "kimi-for-coding",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-for-coding",
         ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-for-coding",
@@ -802,27 +800,6 @@ export const providerPresets: ProviderPreset[] = [
     icon: "amux",
   },
   {
-    name: "Gemini Native",
-    websiteUrl: "https://ai.google.dev/gemini-api",
-    apiKeyUrl: "https://aistudio.google.com/app/apikey",
-    apiKeyField: "ANTHROPIC_API_KEY",
-    settingsConfig: {
-      env: {
-        ANTHROPIC_BASE_URL: "https://generativelanguage.googleapis.com",
-        ANTHROPIC_API_KEY: "",
-        ANTHROPIC_MODEL: "gemini-3.6-flash",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3.6-flash",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gemini-3.6-flash",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gemini-3.6-flash",
-      },
-    },
-    category: "third_party",
-    apiFormat: "gemini_native",
-    endpointCandidates: ["https://generativelanguage.googleapis.com"],
-    icon: "gemini",
-    iconColor: "#4285F4",
-  },
-  {
     name: "DeepSeek",
     websiteUrl: "https://platform.deepseek.com",
     settingsConfig: {
@@ -1285,26 +1262,6 @@ export const providerPresets: ProviderPreset[] = [
     providerType: "codex_oauth",
     requiresOAuth: true,
     icon: "openai",
-    iconColor: "#000000",
-  },
-  {
-    name: "xAI (Grok)",
-    websiteUrl: "https://x.ai/grok",
-    settingsConfig: {
-      env: {
-        // The proxy enforces both this origin and the Responses wire format.
-        ANTHROPIC_BASE_URL: "https://api.x.ai/v1",
-        ANTHROPIC_MODEL: "grok-4.5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "grok-4.5",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "grok-4.5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "grok-4.5",
-      },
-    },
-    category: "third_party",
-    apiFormat: "openai_responses",
-    providerType: "xai_oauth",
-    requiresOAuth: true,
-    icon: "xai",
     iconColor: "#000000",
   },
   {

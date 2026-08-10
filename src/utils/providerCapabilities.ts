@@ -8,7 +8,6 @@ import {
 } from "@/utils/providerConfigUtils";
 
 export const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
-export const GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official";
 
 /** Keep the UI capability rule aligned with the Rust takeover policy. */
 export function supportsOfficialProxyTakeover(
@@ -30,9 +29,7 @@ export function supportsOfficialProxyTakeover(
  * 且后端按 providerType 强制托管认证/格式而**无视 apiFormat**。因此 apiFormat
  * 只是可能被用户改动或旧数据缺省的次要信号，OAuth 供应商一律以 providerType 判定。
  *
- * - Claude Desktop 的普通供应商按 direct/proxy 模式判定；托管 OAuth 没有
- *   direct 逃生口（后端同样拒绝），始终需要本地路由。
- * - claude / codex / grokbuild 的托管 OAuth 同样恒需路由；非 OAuth 则按
+ * - claude / codex 的托管 OAuth 同样恒需路由；非 OAuth 则按
  *   各自原生格式及完整 URL 模式判断是否需要本地处理。
  */
 export function providerNeedsRouting(
@@ -43,12 +40,7 @@ export function providerNeedsRouting(
 
   const isManagedOAuth = isOAuthProviderType(provider.meta?.providerType);
 
-  // Desktop 普通供应商由表单模式决定；托管 OAuth 的 token 只能由代理注入。
-  if (appId === "claude-desktop") {
-    return isManagedOAuth || provider.meta?.claudeDesktopMode === "proxy";
-  }
-
-  if (appId !== "claude" && appId !== "codex" && appId !== "grokbuild") {
+  if (appId !== "claude" && appId !== "codex") {
     return false;
   }
 
@@ -61,7 +53,7 @@ export function providerNeedsRouting(
     return provider.meta?.isFullUrl === true || (!!fmt && fmt !== "anthropic");
   }
 
-  if (appId === "codex" || appId === "grokbuild") {
+  if (appId === "codex") {
     const fmt = provider.meta?.apiFormat;
     // Codex 原生是 Responses，仅 Chat / Anthropic 需要转换（Responses 直连）。
     if (

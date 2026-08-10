@@ -81,14 +81,6 @@ vi.mock("@dnd-kit/sortable", async () => {
   };
 });
 
-// Mock hooks that use QueryClient
-vi.mock("@/hooks/useStreamCheck", () => ({
-  useStreamCheck: () => ({
-    checkProvider: vi.fn(),
-    isChecking: () => false,
-  }),
-}));
-
 vi.mock("@/lib/query/failover", () => ({
   useAutoFailoverEnabled: () => ({ data: false }),
   useFailoverQueue: () => ({ data: [] }),

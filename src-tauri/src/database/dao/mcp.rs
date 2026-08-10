@@ -13,7 +13,7 @@ impl Database {
     pub fn get_all_mcp_servers(&self) -> Result<IndexMap<String, McpServer>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn.prepare(
-            "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_kimi_code
+            "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_gemini, enabled_opencode, enabled_kimi_code
              FROM mcp_servers
              ORDER BY name ASC, id ASC"
         ).map_err(|e| AppError::Database(e.to_string()))?;
@@ -29,11 +29,11 @@ impl Database {
                 let tags_str: String = row.get(6)?;
                 let enabled_claude: bool = row.get(7)?;
                 let enabled_codex: bool = row.get(8)?;
-                let enabled_gemini: bool = row.get(9)?;
-                let enabled_grokbuild: bool = row.get(10)?;
-                let enabled_opencode: bool = row.get(11)?;
-                let enabled_hermes: bool = row.get(12)?;
-                let enabled_kimi_code: bool = row.get(13)?;
+                // enabled_gemini 列保留（老库 schema 兼容），已裁剪 app 忽略该值
+                let _enabled_gemini: bool = row.get(9)?;
+                // enabled_opencode 列保留（老库 schema 兼容），已裁剪 app 忽略该值
+                let _enabled_opencode: bool = row.get(10)?;
+                let enabled_kimi_code: bool = row.get(11)?;
 
                 let server = serde_json::from_str(&server_config_str).unwrap_or_default();
                 let tags = serde_json::from_str(&tags_str).unwrap_or_default();
@@ -47,10 +47,6 @@ impl Database {
                         apps: McpApps {
                             claude: enabled_claude,
                             codex: enabled_codex,
-                            gemini: enabled_gemini,
-                            grokbuild: enabled_grokbuild,
-                            opencode: enabled_opencode,
-                            hermes: enabled_hermes,
                             kimi_code: enabled_kimi_code,
                         },
                         description,
@@ -76,8 +72,8 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO mcp_servers (
                 id, name, server_config, description, homepage, docs, tags,
-                enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_kimi_code
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                enabled_claude, enabled_codex, enabled_gemini, enabled_opencode, enabled_kimi_code
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 server.id,
                 server.name,
@@ -91,10 +87,8 @@ impl Database {
                     .map_err(|e| AppError::Database(format!("Failed to serialize tags: {e}")))?,
                 server.apps.claude,
                 server.apps.codex,
-                server.apps.gemini,
-                server.apps.grokbuild,
-                server.apps.opencode,
-                server.apps.hermes,
+                false, // enabled_gemini: 已裁剪 app，写入 false（列保留兼容老 schema）
+                false, // enabled_opencode: 已裁剪 app，写入 false（列保留兼容老 schema）
                 server.apps.kimi_code,
             ],
         )

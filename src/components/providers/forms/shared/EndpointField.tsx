@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Link2, Zap } from "lucide-react";
+import { Link2 } from "lucide-react";
 
 interface EndpointFieldProps {
   id: string;
@@ -12,9 +12,6 @@ interface EndpointFieldProps {
   placeholder: string;
   hint?: string;
   fullUrlHint?: string;
-  showManageButton?: boolean;
-  onManageClick?: () => void;
-  manageButtonLabel?: string;
   showFullUrlToggle?: boolean;
   isFullUrl?: boolean;
   onFullUrlChange?: (value: boolean) => void;
@@ -28,18 +25,12 @@ export function EndpointField({
   placeholder,
   hint,
   fullUrlHint,
-  showManageButton = true,
-  onManageClick,
-  manageButtonLabel,
   showFullUrlToggle = false,
   isFullUrl = false,
   onFullUrlChange,
 }: EndpointFieldProps) {
   const { t } = useTranslation();
 
-  const defaultManageLabel = t("providerForm.manageAndTest", {
-    defaultValue: "管理和测速",
-  });
   const effectiveHint =
     showFullUrlToggle && isFullUrl
       ? fullUrlHint ||
@@ -81,16 +72,6 @@ export function EndpointField({
             </div>
           ) : null}
         </div>
-        {showManageButton && onManageClick ? (
-          <button
-            type="button"
-            onClick={onManageClick}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Zap className="h-3.5 w-3.5" />
-            {manageButtonLabel || defaultManageLabel}
-          </button>
-        ) : null}
       </div>
       <Input
         id={id}

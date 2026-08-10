@@ -21,8 +21,6 @@ pub const KIMI_CODE_OAUTH_HOST: &str = "https://auth.kimi.com";
 /// 官方托管模板中的 provider block 名（`[providers."managed:kimi-code"]`）。
 /// 该 block 是登录态的路由声明，任何第三方配置中被用户保留时原样保留。
 pub const KIMI_CODE_MANAGED_PROVIDER: &str = "managed:kimi-code";
-/// 托管供应商的默认模型。
-pub const KIMI_CODE_DEFAULT_MODEL: &str = "kimi-for-coding";
 
 /// 获取 Kimi Code 配置目录：`KIMI_CODE_HOME` 环境变量优先，缺省 `~/.kimi-code`。
 ///

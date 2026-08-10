@@ -5,7 +5,6 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
-use crate::services::skill::{SkillStorageLocation, SyncMethod};
 
 /// 自定义端点配置（历史兼容，实际存储在 provider.meta.custom_endpoints）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +14,33 @@ pub struct CustomEndpoint {
     pub added_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used: Option<i64>,
+}
+
+// ===== Skill 设置类型（保留自 services/skill.rs，settings.json 兼容读取） =====
+// Skills 功能已裁剪，仅保留 serde 类型保证老 settings.json 无损反序列化。
+
+/// Skill 同步方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMethod {
+    /// 自动选择：优先 symlink，失败时回退到 copy
+    #[default]
+    Auto,
+    /// 符号链接（推荐，节省磁盘空间）
+    Symlink,
+    /// 文件复制（兼容模式）
+    Copy,
+}
+
+/// Skill 存储位置（SSOT 目录选择）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillStorageLocation {
+    /// CC Switch 管理目录 (~/.cc-switch/skills/)
+    #[default]
+    CcSwitch,
+    /// Agent Skills 统一标准目录 (~/.agents/skills/)
+    Unified,
 }
 
 fn default_true() -> bool {
@@ -27,25 +53,9 @@ fn default_true() -> bool {
 pub struct VisibleApps {
     #[serde(default = "default_true")]
     pub claude: bool,
-    #[serde(
-        rename = "claude-desktop",
-        alias = "claudeDesktop",
-        alias = "claude_desktop",
-        default = "default_true"
-    )]
-    pub claude_desktop: bool,
     #[serde(default = "default_true")]
     pub codex: bool,
-    #[serde(default = "default_true")]
-    pub gemini: bool,
-    #[serde(default = "default_true")]
-    pub grokbuild: bool,
-    #[serde(default = "default_true")]
-    pub opencode: bool,
-    #[serde(default = "default_true")]
-    pub openclaw: bool,
-    #[serde(default)]
-    pub hermes: bool,
+
     #[serde(
         rename = "kimi-code",
         alias = "kimiCode",
@@ -59,13 +69,7 @@ impl Default for VisibleApps {
     fn default() -> Self {
         Self {
             claude: true,
-            claude_desktop: true,
             codex: true,
-            gemini: true,
-            grokbuild: true,
-            opencode: true,
-            openclaw: true,
-            hermes: false, // 默认不显示，需用户手动启用
             kimi_code: true,
         }
     }
@@ -76,215 +80,9 @@ impl VisibleApps {
     pub fn is_visible(&self, app: &AppType) -> bool {
         match app {
             AppType::Claude => self.claude,
-            AppType::ClaudeDesktop => self.claude_desktop,
             AppType::Codex => self.codex,
-            AppType::Gemini => self.gemini,
-            AppType::GrokBuild => self.grokbuild,
-            AppType::OpenCode => self.opencode,
-            AppType::OpenClaw => self.openclaw,
-            AppType::Hermes => self.hermes,
             AppType::KimiCode => self.kimi_code,
         }
-    }
-}
-
-/// WebDAV 同步状态（持久化同步进度信息）
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct WebDavSyncStatus {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_sync_at: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error_source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_remote_etag: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_local_manifest_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_remote_manifest_hash: Option<String>,
-}
-
-fn default_remote_root() -> String {
-    "cc-switch-sync".to_string()
-}
-fn default_profile() -> String {
-    "default".to_string()
-}
-
-/// WebDAV 同步设置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebDavSyncSettings {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub auto_sync: bool,
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub password: String,
-    #[serde(default = "default_remote_root")]
-    pub remote_root: String,
-    #[serde(default = "default_profile")]
-    pub profile: String,
-    #[serde(default)]
-    pub status: WebDavSyncStatus,
-}
-
-impl Default for WebDavSyncSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            auto_sync: false,
-            base_url: String::new(),
-            username: String::new(),
-            password: String::new(),
-            remote_root: default_remote_root(),
-            profile: default_profile(),
-            status: WebDavSyncStatus::default(),
-        }
-    }
-}
-
-impl WebDavSyncSettings {
-    pub fn validate(&self) -> Result<(), crate::error::AppError> {
-        if self.base_url.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "webdav.base_url.required",
-                "WebDAV 地址不能为空",
-                "WebDAV URL is required.",
-            ));
-        }
-        if self.username.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "webdav.username.required",
-                "WebDAV 用户名不能为空",
-                "WebDAV username is required.",
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn normalize(&mut self) {
-        self.base_url = self.base_url.trim().to_string();
-        self.username = self.username.trim().to_string();
-        self.remote_root = self.remote_root.trim().to_string();
-        self.profile = self.profile.trim().to_string();
-        if self.remote_root.is_empty() {
-            self.remote_root = default_remote_root();
-        }
-        if self.profile.is_empty() {
-            self.profile = default_profile();
-        }
-    }
-
-    /// Returns true if all credential fields are blank (no config to persist).
-    fn is_empty(&self) -> bool {
-        self.base_url.is_empty() && self.username.is_empty() && self.password.is_empty()
-    }
-}
-
-/// S3 同步设置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct S3SyncSettings {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub auto_sync: bool,
-    #[serde(default)]
-    pub region: String,
-    #[serde(default)]
-    pub bucket: String,
-    #[serde(default)]
-    pub access_key_id: String,
-    #[serde(default)]
-    pub secret_access_key: String,
-    #[serde(default)]
-    pub endpoint: String,
-    #[serde(default = "default_remote_root")]
-    pub remote_root: String,
-    #[serde(default = "default_profile")]
-    pub profile: String,
-    #[serde(default)]
-    pub status: WebDavSyncStatus,
-}
-
-impl Default for S3SyncSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            auto_sync: false,
-            region: String::new(),
-            bucket: String::new(),
-            access_key_id: String::new(),
-            secret_access_key: String::new(),
-            endpoint: String::new(),
-            remote_root: default_remote_root(),
-            profile: default_profile(),
-            status: WebDavSyncStatus::default(),
-        }
-    }
-}
-
-impl S3SyncSettings {
-    pub fn validate(&self) -> Result<(), crate::error::AppError> {
-        if self.bucket.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "s3.bucket.required",
-                "S3 存储桶不能为空",
-                "S3 bucket is required.",
-            ));
-        }
-        if self.region.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "s3.region.required",
-                "S3 区域不能为空",
-                "S3 region is required.",
-            ));
-        }
-        if self.access_key_id.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "s3.access_key_id.required",
-                "S3 Access Key ID 不能为空",
-                "S3 Access Key ID is required.",
-            ));
-        }
-        if self.secret_access_key.trim().is_empty() {
-            return Err(crate::error::AppError::localized(
-                "s3.secret_access_key.required",
-                "S3 Secret Access Key 不能为空",
-                "S3 Secret Access Key is required.",
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn normalize(&mut self) {
-        self.region = self.region.trim().to_string();
-        self.bucket = self.bucket.trim().to_string();
-        self.access_key_id = self.access_key_id.trim().to_string();
-        self.endpoint = self.endpoint.trim().to_string();
-        self.remote_root = self.remote_root.trim().to_string();
-        self.profile = self.profile.trim().to_string();
-        if self.remote_root.is_empty() {
-            self.remote_root = default_remote_root();
-        }
-        if self.profile.is_empty() {
-            self.profile = default_profile();
-        }
-    }
-
-    /// Returns true if all credential fields are blank (no config to persist).
-    fn is_empty(&self) -> bool {
-        self.bucket.is_empty()
-            && self.region.is_empty()
-            && self.access_key_id.is_empty()
-            && self.secret_access_key.is_empty()
     }
 }
 
@@ -421,42 +219,14 @@ pub struct AppSettings {
     pub claude_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gemini_config_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grok_config_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opencode_config_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openclaw_config_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hermes_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_claude: Option<String>,
-    /// 当前 Claude Desktop 供应商 ID（本地存储，优先于数据库 is_current）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_claude_desktop: Option<String>,
     /// 当前 Codex 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_codex: Option<String>,
-    /// 当前 Gemini 供应商 ID（本地存储，优先于数据库 is_current）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_gemini: Option<String>,
-    /// 当前 Grok Build 供应商 ID（本地存储，优先于数据库 is_current）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_grokbuild: Option<String>,
-    /// 当前 OpenCode 供应商 ID（本地存储，对 OpenCode 可能无意义，但保持结构一致）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_opencode: Option<String>,
-    /// 当前 OpenClaw 供应商 ID（本地存储，对 OpenClaw 可能无意义，但保持结构一致）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_openclaw: Option<String>,
-    /// 当前 Hermes 供应商 ID（本地存储，保持结构一致）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_provider_hermes: Option<String>,
     /// 当前 Kimi Code 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_kimi_code: Option<String>,
@@ -468,18 +238,6 @@ pub struct AppSettings {
     /// Skill 存储位置：cc_switch（默认）或 unified（~/.agents/skills/）
     #[serde(default)]
     pub skill_storage_location: SkillStorageLocation,
-
-    // ===== WebDAV 同步设置 =====
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub webdav_sync: Option<WebDavSyncSettings>,
-
-    // ===== S3 同步设置 =====
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub s3_sync: Option<S3SyncSettings>,
-
-    // ===== WebDAV 备份设置（旧版，保留向后兼容）=====
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub webdav_backup: Option<serde_json::Value>,
 
     // ===== 备份策略设置 =====
     /// Auto-backup interval in hours (default 24, 0 = disabled)
@@ -540,25 +298,11 @@ impl Default for AppSettings {
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,
-            gemini_config_dir: None,
-            grok_config_dir: None,
-            opencode_config_dir: None,
-            openclaw_config_dir: None,
-            hermes_config_dir: None,
             current_provider_claude: None,
-            current_provider_claude_desktop: None,
             current_provider_codex: None,
-            current_provider_gemini: None,
-            current_provider_grokbuild: None,
-            current_provider_opencode: None,
-            current_provider_openclaw: None,
-            current_provider_hermes: None,
             current_provider_kimi_code: None,
             skill_sync_method: SyncMethod::default(),
             skill_storage_location: SkillStorageLocation::default(),
-            webdav_sync: None,
-            s3_sync: None,
-            webdav_backup: None,
             backup_interval_hours: None,
             backup_retain_count: None,
             preferred_terminal: None,
@@ -592,61 +336,12 @@ impl AppSettings {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        self.gemini_config_dir = self
-            .gemini_config_dir
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
-        self.grok_config_dir = self
-            .grok_config_dir
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
-        self.opencode_config_dir = self
-            .opencode_config_dir
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
-        self.openclaw_config_dir = self
-            .openclaw_config_dir
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
-        self.hermes_config_dir = self
-            .hermes_config_dir
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
         self.language = self
             .language
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| matches!(*s, "en" | "zh" | "zh-TW" | "ja"))
             .map(|s| s.to_string());
-
-        if let Some(sync) = &mut self.webdav_sync {
-            sync.normalize();
-            if sync.is_empty() {
-                self.webdav_sync = None;
-            }
-        }
-
-        if let Some(s3) = &mut self.s3_sync {
-            s3.normalize();
-            if s3.is_empty() {
-                self.s3_sync = None;
-            }
-        }
     }
 
     fn load_from_file() -> Self {
@@ -747,15 +442,7 @@ pub fn get_settings() -> AppSettings {
 }
 
 pub fn get_settings_for_frontend() -> AppSettings {
-    let mut settings = get_settings();
-    if let Some(sync) = &mut settings.webdav_sync {
-        sync.password.clear();
-    }
-    if let Some(s3) = &mut settings.s3_sync {
-        s3.secret_access_key.clear();
-    }
-    settings.webdav_backup = None;
-    settings
+    get_settings()
 }
 
 pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
@@ -880,6 +567,7 @@ pub fn clear_codex_unify_migrate_existing() -> Result<(), AppError> {
 
 /// 从文件重新加载设置到内存缓存
 /// 用于导入配置等场景，确保内存缓存与文件同步
+#[cfg(test)]
 pub fn reload_settings() -> Result<(), AppError> {
     let fresh_settings = AppSettings::load_from_file();
     let mut guard = settings_store().write().unwrap_or_else(|e| {
@@ -902,46 +590,6 @@ pub fn get_codex_override_dir() -> Option<PathBuf> {
     let settings = settings_store().read().ok()?;
     settings
         .codex_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
-}
-
-pub fn get_gemini_override_dir() -> Option<PathBuf> {
-    let settings = settings_store().read().ok()?;
-    settings
-        .gemini_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
-}
-
-pub fn get_grok_override_dir() -> Option<PathBuf> {
-    let settings = settings_store().read().ok()?;
-    settings
-        .grok_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
-}
-
-pub fn get_opencode_override_dir() -> Option<PathBuf> {
-    let settings = settings_store().read().ok()?;
-    settings
-        .opencode_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
-}
-
-pub fn get_openclaw_override_dir() -> Option<PathBuf> {
-    let settings = settings_store().read().ok()?;
-    settings
-        .openclaw_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
-}
-
-pub fn get_hermes_override_dir() -> Option<PathBuf> {
-    let settings = settings_store().read().ok()?;
-    settings
-        .hermes_config_dir
         .as_ref()
         .map(|p| resolve_override_path(p))
 }
@@ -976,13 +624,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
     let settings = settings_store().read().ok()?;
     match app_type {
         AppType::Claude => settings.current_provider_claude.clone(),
-        AppType::ClaudeDesktop => settings.current_provider_claude_desktop.clone(),
         AppType::Codex => settings.current_provider_codex.clone(),
-        AppType::Gemini => settings.current_provider_gemini.clone(),
-        AppType::GrokBuild => settings.current_provider_grokbuild.clone(),
-        AppType::OpenCode => settings.current_provider_opencode.clone(),
-        AppType::OpenClaw => settings.current_provider_openclaw.clone(),
-        AppType::Hermes => settings.current_provider_hermes.clone(),
         AppType::KimiCode => settings.current_provider_kimi_code.clone(),
     }
 }
@@ -995,13 +637,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
     let id_owned = id.map(|s| s.to_string());
     mutate_settings(|settings| match app_type {
         AppType::Claude => settings.current_provider_claude = id_owned.clone(),
-        AppType::ClaudeDesktop => settings.current_provider_claude_desktop = id_owned.clone(),
         AppType::Codex => settings.current_provider_codex = id_owned.clone(),
-        AppType::Gemini => settings.current_provider_gemini = id_owned.clone(),
-        AppType::GrokBuild => settings.current_provider_grokbuild = id_owned.clone(),
-        AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
-        AppType::OpenClaw => settings.current_provider_openclaw = id_owned.clone(),
-        AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
         AppType::KimiCode => settings.current_provider_kimi_code = id_owned.clone(),
     })
 }
@@ -1039,39 +675,6 @@ pub fn get_effective_current_provider(
 
     // Fallback 到数据库的 is_current
     db.get_current_provider(app_type.as_str())
-}
-
-// ===== Skill 同步方式管理函数 =====
-
-/// 获取 Skill 同步方式配置
-pub fn get_skill_sync_method() -> SyncMethod {
-    settings_store()
-        .read()
-        .unwrap_or_else(|e| {
-            log::warn!("设置锁已毒化，使用恢复值: {e}");
-            e.into_inner()
-        })
-        .skill_sync_method
-}
-
-// ===== Skill 存储位置管理函数 =====
-
-/// 获取 Skill 存储位置配置
-pub fn get_skill_storage_location() -> SkillStorageLocation {
-    settings_store()
-        .read()
-        .unwrap_or_else(|e| {
-            log::warn!("设置锁已毒化，使用恢复值: {e}");
-            e.into_inner()
-        })
-        .skill_storage_location
-}
-
-/// 设置 Skill 存储位置
-pub fn set_skill_storage_location(location: SkillStorageLocation) -> Result<(), AppError> {
-    mutate_settings(|s| {
-        s.skill_storage_location = location;
-    })
 }
 
 // ===== 备份策略管理函数 =====
@@ -1113,84 +716,4 @@ pub fn get_preferred_terminal() -> Option<String> {
         })
         .preferred_terminal
         .clone()
-}
-
-// ===== WebDAV 同步设置管理函数 =====
-
-/// 获取 WebDAV 同步设置
-pub fn get_webdav_sync_settings() -> Option<WebDavSyncSettings> {
-    settings_store().read().ok()?.webdav_sync.clone()
-}
-
-/// 保存 WebDAV 同步设置
-pub fn set_webdav_sync_settings(settings: Option<WebDavSyncSettings>) -> Result<(), AppError> {
-    mutate_settings(|current| {
-        current.webdav_sync = settings;
-    })
-}
-
-/// 仅更新 WebDAV 同步状态，避免覆写 credentials/root/profile 等字段
-pub fn update_webdav_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
-    mutate_settings(|current| {
-        if let Some(sync) = current.webdav_sync.as_mut() {
-            sync.status = status;
-        }
-    })
-}
-
-// ===== S3 同步设置管理函数 =====
-
-pub fn get_s3_sync_settings() -> Option<S3SyncSettings> {
-    settings_store().read().ok()?.s3_sync.clone()
-}
-
-pub fn set_s3_sync_settings(settings: Option<S3SyncSettings>) -> Result<(), AppError> {
-    mutate_settings(|current| {
-        current.s3_sync = settings;
-    })
-}
-
-pub fn update_s3_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
-    mutate_settings(|current| {
-        if let Some(s3) = current.s3_sync.as_mut() {
-            s3.status = status;
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app_config::AppType;
-
-    #[test]
-    fn visible_apps_old_settings_default_claude_desktop_visible() {
-        let visible: VisibleApps = serde_json::from_value(serde_json::json!({
-            "claude": true,
-            "codex": true,
-            "gemini": true,
-            "opencode": true,
-            "openclaw": true,
-            "hermes": true
-        }))
-        .expect("visible apps");
-
-        assert!(visible.is_visible(&AppType::ClaudeDesktop));
-    }
-
-    #[test]
-    fn visible_apps_accepts_claude_desktop_aliases() {
-        let visible: VisibleApps = serde_json::from_value(serde_json::json!({
-            "claude": true,
-            "claudeDesktop": false,
-            "codex": true,
-            "gemini": true,
-            "opencode": true,
-            "openclaw": true,
-            "hermes": true
-        }))
-        .expect("visible apps");
-
-        assert!(!visible.is_visible(&AppType::ClaudeDesktop));
-    }
 }

@@ -16,8 +16,7 @@ const isPlainObject = (value: unknown): value is Record<string, any> => {
  * `JSON.parse('{"__proto__":{…}}')` 产生的 `__proto__` 是**自有可枚举属性**，
  * 会被 `Object.entries` 取出；而 `isPlainObject(target["__proto__"])` 对
  * `Object.prototype` 返回 true，于是递归直接写进全局原型。通用配置片段
- * (`settings.common_config_*`) 会被 WebDAV/S3 同步的远端覆盖，所以这条路径
- * 不需要 XSS 就可达。
+ * (`settings.common_config_*`) 由外部文件导入，所以这条路径不需要 XSS 就可达。
  *
  * 正常流程里片段在入口已经过 `sanitizeSnippet`，下面三个遍历函数
  * (`deepMerge` / `deepRemove` / `isSubset`) 不会再见到这些键；它们各自仍带一层
@@ -211,7 +210,7 @@ export const hasCommonConfigSnippet = (
   }
 };
 
-// 读取配置中的 API Key（支持 Claude, Codex, Gemini）
+// 读取配置中的 API Key（支持 Claude, Codex）
 export const getApiKeyFromConfig = (
   jsonString: string,
   appType?: string,
@@ -231,12 +230,6 @@ export const getApiKeyFromConfig = (
     const env = config?.env;
 
     if (!env) return "";
-
-    // Gemini API Key
-    if (appType === "gemini") {
-      const geminiKey = env.GEMINI_API_KEY;
-      return typeof geminiKey === "string" ? geminiKey : "";
-    }
 
     // Codex API Key
     if (appType === "codex") {
@@ -319,10 +312,6 @@ export const hasApiKeyField = (
 
     const env = config?.env ?? {};
 
-    if (appType === "gemini") {
-      return Object.prototype.hasOwnProperty.call(env, "GEMINI_API_KEY");
-    }
-
     if (appType === "codex") {
       return Object.prototype.hasOwnProperty.call(env, "CODEX_API_KEY");
     }
@@ -361,18 +350,6 @@ export const setApiKeyInConfig = (
       config.env = {};
     }
     const env = config.env as Record<string, any>;
-
-    // Gemini API Key
-    if (appType === "gemini") {
-      if ("GEMINI_API_KEY" in env) {
-        env.GEMINI_API_KEY = apiKey;
-      } else if (createIfMissing) {
-        env.GEMINI_API_KEY = apiKey;
-      } else {
-        return jsonString;
-      }
-      return JSON.stringify(config, null, 2);
-    }
 
     // Codex API Key
     if (appType === "codex") {

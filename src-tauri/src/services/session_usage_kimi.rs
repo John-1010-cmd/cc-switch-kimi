@@ -781,7 +781,7 @@ fn tail_kimi_files(
             continue;
         }
 
-        let Some(wire) = wire_file_from_path(&sessions_dir, path.clone()) else {
+        let Some(wire) = wire_file_from_path(sessions_dir, path.clone()) else {
             log::debug!("[KIMI-TAIL] 无法从路径推导会话身份: {}", path.display());
             continue;
         };
@@ -1107,7 +1107,7 @@ mod tests {
     fn corrupt_middle_line_does_not_panic() {
         let temp = tempdir().unwrap();
         let wire = temp.path().join("wire.jsonl");
-        let lines = vec![
+        let lines = [
             metadata_line().to_string(),
             step_end(json!(1754000000000i64), usage_four()).to_string(),
             "{broken json".to_string(),

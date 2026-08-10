@@ -43,13 +43,7 @@ export interface ProxyServerInfo {
 
 export interface ProxyTakeoverStatus {
   claude: boolean;
-  "claude-desktop"?: boolean;
   codex: boolean;
-  gemini: boolean;
-  grokbuild: boolean;
-  opencode: boolean;
-  openclaw: boolean;
-  hermes: boolean;
   "kimi-code"?: boolean;
 }
 

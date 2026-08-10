@@ -18,16 +18,16 @@
 /// would happen with the opposite default.
 /// 单一语义集（SSOT）：写入侧（proxy logger/calculator）、回填侧
 /// （usage_stats 成本重算）与展示侧（本文件的 SQL 归一）都必须引用这里，
-/// 防止同一语义散落多处后新增 app 时漏改（grokbuild 曾在回填侧漏掉）。
+/// 防止同一语义散落多处后新增 app 时漏改。
 /// 前端 `src/types/usage.ts` 的同名常量是跨语言的对应物，改动须同步。
 ///
 /// kimi-code 走 Anthropic 协议，四分量齐全：inputCacheCreation 有真实值，
 /// 入库 input_tokens 为总输入（semantics=TOTAL），因此列入本白名单由
 /// fresh_input_sql 的 TOTAL 分支扣减。注意 "cacheCreation 恒 0、UI 显示 N/A"
-/// 的假设仅对 OpenAI 协议 proxy app（codex/gemini/grokbuild）成立，
+/// 的假设仅对 OpenAI 协议 proxy app（codex/gemini）成立，
 /// 对 kimi-code 不成立——其 cache-write 的 N/A 判定须按数据驱动。
 pub(crate) const CACHE_INCLUSIVE_APP_TYPES: &[&str] =
-    &["codex", "gemini", "grokbuild", "kimi-code"];
+    &["codex", "gemini", "kimi-code"];
 
 /// `app_type` 的存储 `input_tokens` 是否已包含 cache read/write。
 pub(crate) fn is_cache_inclusive_app(app_type: &str) -> bool {
@@ -109,7 +109,6 @@ mod tests {
         assert!(!sql.contains("."));
         assert!(sql.contains("'codex'"));
         assert!(sql.contains("'gemini'"));
-        assert!(sql.contains("'grokbuild'"));
     }
 
     #[test]
@@ -129,13 +128,6 @@ mod tests {
             [],
         )
         .unwrap();
-        // Grok Build uses OpenAI Responses semantics too.
-        conn.execute(
-            "INSERT INTO proxy_request_logs (request_id, app_type, input_tokens, cache_read_tokens)
-             VALUES ('grok-1', 'grokbuild', 700, 250)",
-            [],
-        )
-        .unwrap();
         // Claude row: Anthropic semantics — input_tokens already excludes cache.
         conn.execute(
             "INSERT INTO proxy_request_logs (request_id, app_type, input_tokens, cache_read_tokens)
@@ -147,8 +139,8 @@ mod tests {
         let expr = fresh_input_sql("l");
         let sql = format!("SELECT COALESCE(SUM({expr}), 0) FROM proxy_request_logs l");
         let total: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
-        // Codex: 400; Gemini: 500; Grok Build: 450; Claude: 200 unchanged.
-        assert_eq!(total, 400 + 500 + 450 + 200);
+        // Codex: 400; Gemini: 500; Claude: 200 unchanged.
+        assert_eq!(total, 400 + 500 + 200);
     }
 
     #[test]

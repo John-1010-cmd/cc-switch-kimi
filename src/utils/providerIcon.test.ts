@@ -2,15 +2,8 @@ import { describe, expect, it } from "vitest";
 import { resolveProviderIcon } from "./providerIcon";
 
 describe("resolveProviderIcon", () => {
-  it("clears the legacy automatic Grok Build icon", () => {
-    expect(resolveProviderIcon("grokbuild", "grok", "")).toBeUndefined();
-    expect(resolveProviderIcon("grokbuild", "grok")).toBeUndefined();
-  });
-
   it("preserves a Grok icon explicitly selected by the user", () => {
-    expect(resolveProviderIcon("grokbuild", "grok", "currentColor")).toBe(
-      "grok",
-    );
+    expect(resolveProviderIcon("claude", "grok", "currentColor")).toBe("grok");
   });
 
   it("does not reinterpret another app's provider icon", () => {
@@ -18,6 +11,6 @@ describe("resolveProviderIcon", () => {
   });
 
   it("normalizes an empty icon to the initials fallback", () => {
-    expect(resolveProviderIcon("grokbuild", "  ", "")).toBeUndefined();
+    expect(resolveProviderIcon("claude", "  ", "")).toBeUndefined();
   });
 });

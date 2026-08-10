@@ -8,7 +8,7 @@ import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
-import { openclawApi, providersApi, vscodeApi, type AppId } from "@/lib/api";
+import { providersApi, vscodeApi, type AppId } from "@/lib/api";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -66,36 +66,8 @@ export function EditProviderDialog({
         return;
       }
 
-      // OpenCode uses additive mode - each provider's config is stored independently in DB
-      // Reading live config would return the full opencode.json (with $schema, provider, mcp etc.)
-      // instead of just the provider fragment, causing incorrect nested structure on save
-      if (appId === "opencode") {
-        if (!cancelled) {
-          setLiveSettings(null);
-          setHasLoadedLive(true);
-        }
-        return;
-      }
-
-      if (appId === "openclaw") {
-        try {
-          const live = await openclawApi.getLiveProvider(provider.id);
-          if (!cancelled && live && typeof live === "object") {
-            setLiveSettings(live);
-          } else if (!cancelled) {
-            setLiveSettings(null);
-          }
-        } catch {
-          if (!cancelled) {
-            setLiveSettings(null);
-          }
-        } finally {
-          if (!cancelled) {
-            setHasLoadedLive(true);
-          }
-        }
-        return;
-      }
+      // 累加模式应用已裁剪：每个 provider 的配置独立存储在 DB，
+      // 读取 live config 会返回整份配置文件而不是 provider 片段。
 
       try {
         const currentId = await providersApi.getCurrent(appId);
@@ -183,16 +155,14 @@ export function EditProviderDialog({
       if (!provider) return;
 
       // 注意：values.settingsConfig 已经是最终的配置字符串
-      // ProviderForm 已经为不同的 app 类型（Claude/Codex/Gemini）正确组装了配置
+      // ProviderForm 已经为不同的 app 类型（Claude/Codex/Kimi Code）正确组装了配置
       const parsedConfig = JSON.parse(values.settingsConfig) as Record<
         string,
         unknown
       >;
-      const nextProviderId =
-        (appId === "opencode" || appId === "openclaw") &&
-        values.providerKey?.trim()
-          ? values.providerKey.trim()
-          : provider.id;
+      const nextProviderId = values.providerKey?.trim()
+        ? values.providerKey.trim()
+        : provider.id;
 
       const updatedProvider: Provider = {
         ...provider,

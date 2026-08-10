@@ -19,7 +19,6 @@ describe("supportsKimiRealtimeMetrics", () => {
   it("其他 app 过滤视角 → disabled", () => {
     expect(supportsKimiRealtimeMetrics("claude")).toBe(false);
     expect(supportsKimiRealtimeMetrics("codex")).toBe(false);
-    expect(supportsKimiRealtimeMetrics("gemini")).toBe(false);
   });
 });
 

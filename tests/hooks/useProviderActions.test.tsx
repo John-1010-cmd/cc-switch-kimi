@@ -57,9 +57,6 @@ const providersApiUpdateMock = vi.fn();
 const providersApiUpdateTrayMenuMock = vi.fn();
 const settingsApiGetMock = vi.fn();
 const settingsApiApplyMock = vi.fn();
-const openclawApiGetModelCatalogMock = vi.fn();
-const openclawApiGetDefaultModelMock = vi.fn();
-const openclawApiSetDefaultModelMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   providersApi: {
@@ -71,14 +68,6 @@ vi.mock("@/lib/api", () => ({
     get: (...args: unknown[]) => settingsApiGetMock(...args),
     applyClaudePluginConfig: (...args: unknown[]) =>
       settingsApiApplyMock(...args),
-  },
-  openclawApi: {
-    getModelCatalog: (...args: unknown[]) =>
-      openclawApiGetModelCatalogMock(...args),
-    getDefaultModel: (...args: unknown[]) =>
-      openclawApiGetDefaultModelMock(...args),
-    setDefaultModel: (...args: unknown[]) =>
-      openclawApiSetDefaultModelMock(...args),
   },
 }));
 
@@ -115,9 +104,6 @@ beforeEach(() => {
   providersApiUpdateTrayMenuMock.mockReset();
   settingsApiGetMock.mockReset();
   settingsApiApplyMock.mockReset();
-  openclawApiGetModelCatalogMock.mockReset();
-  openclawApiGetDefaultModelMock.mockReset();
-  openclawApiSetDefaultModelMock.mockReset();
   toastSuccessMock.mockReset();
   toastErrorMock.mockReset();
   toastInfoMock.mockReset();
@@ -264,42 +250,6 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
-  it("warns for Grok providers that require the Responses router", async () => {
-    switchProviderMutateAsync.mockResolvedValue(undefined);
-    const { wrapper } = createWrapper();
-    const providers = [
-      createProvider({
-        id: "grok-chat",
-        category: "custom",
-        meta: { apiFormat: "openai_chat" },
-      }),
-      createProvider({
-        id: "grok-anthropic",
-        category: "custom",
-        meta: { apiFormat: "anthropic" },
-      }),
-      createProvider({
-        id: "grok-full-url",
-        category: "custom",
-        meta: { isFullUrl: true },
-      }),
-    ];
-
-    const { result } = renderHook(
-      () => useProviderActions("grokbuild", false),
-      { wrapper },
-    );
-
-    for (const provider of providers) {
-      await act(async () => {
-        await result.current.switchProvider(provider);
-      });
-    }
-
-    expect(toastWarningMock).toHaveBeenCalledTimes(3);
-    expect(switchProviderMutateAsync).toHaveBeenCalledTimes(3);
-  });
-
   it("warns for managed OAuth until the current Code app is taken over", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
@@ -312,7 +262,7 @@ describe("useProviderActions", () => {
     });
 
     const { result } = renderHook(
-      () => useProviderActions("codex", true, false),
+      () => useProviderActions("codex", false),
       { wrapper },
     );
 
@@ -338,7 +288,7 @@ describe("useProviderActions", () => {
     });
 
     const { result } = renderHook(
-      () => useProviderActions("codex", true, true),
+      () => useProviderActions("codex", true),
       { wrapper },
     );
 
@@ -350,36 +300,6 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
-  it("uses proxy process readiness for Claude Desktop routing", async () => {
-    switchProviderMutateAsync.mockResolvedValue(undefined);
-    const { wrapper } = createWrapper();
-    const provider = createProvider({
-      category: "custom",
-      meta: { claudeDesktopMode: "proxy" },
-    });
-
-    const { result, rerender } = renderHook(
-      ({ isProxyRunning }) =>
-        useProviderActions("claude-desktop", isProxyRunning, false),
-      { initialProps: { isProxyRunning: true }, wrapper },
-    );
-
-    await act(async () => {
-      await result.current.switchProvider(provider);
-    });
-    expect(toastWarningMock).not.toHaveBeenCalled();
-
-    rerender({ isProxyRunning: false });
-    await act(async () => {
-      await result.current.switchProvider(provider);
-    });
-
-    expect(toastWarningMock).toHaveBeenCalledTimes(1);
-    expect(toastWarningMock).toHaveBeenCalledWith(
-      expect.stringContaining("Claude Desktop 本地路由模式"),
-    );
-  });
-
   it("allows the built-in Codex official provider during takeover", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
@@ -389,7 +309,7 @@ describe("useProviderActions", () => {
     });
 
     const { result } = renderHook(
-      () => useProviderActions("codex", true, true),
+      () => useProviderActions("codex", true),
       { wrapper },
     );
 
@@ -409,7 +329,7 @@ describe("useProviderActions", () => {
     });
 
     const { result } = renderHook(
-      () => useProviderActions("claude", true, true),
+      () => useProviderActions("claude", true),
       { wrapper },
     );
 
@@ -428,7 +348,7 @@ describe("useProviderActions", () => {
       category: "official",
     });
     const { result } = renderHook(
-      () => useProviderActions("codex", true, true),
+      () => useProviderActions("codex", true),
       { wrapper },
     );
 
@@ -718,35 +638,6 @@ describe("useProviderActions", () => {
     });
 
     expect(result.current.isLoading).toBe(true);
-  });
-
-  it("does not show backup details when setting OpenClaw default model", async () => {
-    openclawApiSetDefaultModelMock.mockResolvedValueOnce({
-      backupPath: "/tmp/openclaw-backup.json5",
-      warnings: [],
-    });
-
-    const { wrapper } = createWrapper();
-    const provider = createProvider({
-      settingsConfig: {
-        models: [{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }],
-      },
-    });
-
-    const { result } = renderHook(() => useProviderActions("openclaw"), {
-      wrapper,
-    });
-
-    await act(async () => {
-      await result.current.setAsDefaultModel(provider);
-    });
-
-    expect(openclawApiSetDefaultModelMock).toHaveBeenCalledWith({
-      primary: "provider-1/gpt-4.1",
-      fallbacks: ["provider-1/gpt-4.1-mini"],
-    });
-    expect(toastSuccessMock).toHaveBeenCalledTimes(1);
-    expect(toastSuccessMock.mock.calls[0]?.[1]).toEqual({ closeButton: true });
   });
 });
 it("clears loading flag when all mutations idle", () => {

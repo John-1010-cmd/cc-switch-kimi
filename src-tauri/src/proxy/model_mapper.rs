@@ -2,9 +2,13 @@
 //!
 //! 在请求转发前，根据 Provider 配置替换请求中的模型名称
 
-use crate::claude_desktop_config::ONE_M_CONTEXT_MARKER;
 use crate::provider::Provider;
 use serde_json::Value;
+
+/// Claude Code 通过 `[1M]` 后缀声明 1M 上下文能力（匹配用 `eq_ignore_ascii_case`）。
+/// 原定义于已裁剪的 claude_desktop_config.rs，为保留的 Claude Code 链路继续使用
+/// 而迁移至此（model_capabilities / usage_stats / services::proxy 均引用）。
+pub const ONE_M_CONTEXT_MARKER: &str = "[1m]";
 
 /// 模型映射配置
 pub struct ModelMapping {

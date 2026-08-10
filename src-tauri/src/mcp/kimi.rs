@@ -259,10 +259,6 @@ pub fn import_from_kimi_code(config: &mut MultiAppConfig) -> Result<usize, AppEr
                     apps: McpApps {
                         claude: false,
                         codex: false,
-                        gemini: false,
-                        grokbuild: false,
-                        opencode: false,
-                        hermes: false,
                         kimi_code: true,
                     },
                     description: None,

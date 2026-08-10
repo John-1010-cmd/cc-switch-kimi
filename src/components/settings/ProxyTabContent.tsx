@@ -28,8 +28,6 @@ interface ProxyTabContentProps {
 export const FAILOVER_APPS = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
-  { id: "gemini", label: "Gemini" },
-  { id: "grokbuild", label: "Grok Build" },
 ] as const;
 
 export function ProxyTabContent({

@@ -58,13 +58,7 @@ const UnifiedMcpPanel = React.forwardRef<
   const enabledCounts = useMemo(() => {
     const counts = {
       claude: 0,
-      "claude-desktop": 0,
       codex: 0,
-      gemini: 0,
-      grokbuild: 0,
-      opencode: 0,
-      openclaw: 0,
-      hermes: 0,
       "kimi-code": 0,
     };
     serverEntries.forEach(([_, server]) => {

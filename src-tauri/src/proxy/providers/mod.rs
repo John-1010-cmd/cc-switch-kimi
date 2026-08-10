@@ -7,7 +7,6 @@
 //! - `auth`: 认证类型和策略
 //! - `claude`: Claude (Anthropic) 适配器
 //! - `codex`: Codex (OpenAI) 适配器
-//! - `gemini`: Gemini (Google) 适配器
 //! - `models`: API 数据模型
 //! - `transform`: 格式转换
 
@@ -21,24 +20,16 @@ pub mod codex_oauth_auth;
 pub(crate) mod codex_responses_sse;
 pub mod copilot_auth;
 pub mod copilot_model_map;
-mod gemini;
-pub(crate) mod gemini_schema;
-pub mod gemini_shadow;
 pub mod models;
 pub(crate) mod reasoning_bridge;
 pub mod streaming;
 pub mod streaming_codex_anthropic;
 pub mod streaming_codex_chat;
-pub mod streaming_gemini;
 pub mod streaming_responses;
 pub mod transform;
 pub mod transform_codex_anthropic;
 pub mod transform_codex_chat;
-pub mod transform_codex_responses_namespace;
-pub mod transform_codex_responses_xai_sanitize;
-pub mod transform_gemini;
 pub mod transform_responses;
-pub mod xai_oauth_auth;
 
 use crate::app_config::AppType;
 use crate::provider::Provider;
@@ -59,11 +50,9 @@ pub use codex::CodexAdapter;
 pub use codex::{
     apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
     inject_codex_chat_prompt_cache_key, is_codex_official_provider,
-    provider_needs_responses_namespace_flatten, resolve_codex_catalog_tool_profile,
-    resolve_codex_chat_reasoning_config, should_convert_codex_responses_to_anthropic,
-    should_convert_codex_responses_to_chat,
+    resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,
+    should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
 };
-pub use gemini::GeminiAdapter;
 
 /// 供应商类型枚举
 ///
@@ -78,10 +67,6 @@ pub enum ProviderType {
     ClaudeAuth,
     /// OpenAI Codex Response API
     Codex,
-    /// Google Gemini API (x-goog-api-key)
-    Gemini,
-    /// Google Gemini CLI (OAuth Bearer)
-    GeminiCli,
     /// OpenRouter（已支持 Claude Code 兼容接口，默认透传；保留旧转换逻辑备用）
     OpenRouter,
     /// GitHub Copilot (OAuth + Copilot Token，需要 Anthropic ↔ OpenAI 转换)
@@ -115,9 +100,6 @@ impl ProviderType {
         match self {
             ProviderType::Claude | ProviderType::ClaudeAuth => "https://api.anthropic.com",
             ProviderType::Codex => "https://api.openai.com",
-            ProviderType::Gemini | ProviderType::GeminiCli => {
-                "https://generativelanguage.googleapis.com"
-            }
             ProviderType::OpenRouter => "https://openrouter.ai/api",
             ProviderType::GitHubCopilot => "https://api.githubcopilot.com",
             ProviderType::CodexOAuth => CHATGPT_CODEX_BASE_URL,
@@ -131,15 +113,7 @@ impl ProviderType {
     #[allow(dead_code)]
     pub fn from_app_type_and_config(app_type: &AppType, provider: &Provider) -> Self {
         match app_type {
-            AppType::Claude | AppType::ClaudeDesktop => {
-                if get_claude_api_format(provider) == "gemini_native" {
-                    let adapter = ClaudeAdapter::new();
-                    return match adapter.extract_auth(provider).map(|auth| auth.strategy) {
-                        Some(AuthStrategy::GoogleOAuth) => ProviderType::GeminiCli,
-                        _ => ProviderType::Gemini,
-                    };
-                }
-
+            AppType::Claude => {
                 // 检测是否为 GitHub Copilot
                 if let Some(meta) = provider.meta.as_ref() {
                     if meta.provider_type.as_deref() == Some("github_copilot") {
@@ -188,24 +162,6 @@ impl ProviderType {
                 ProviderType::Claude
             }
             AppType::Codex => ProviderType::Codex,
-            AppType::Gemini => {
-                // 检测是否为 CLI 模式（OAuth）
-                let adapter = GeminiAdapter::new();
-                if let Some(auth) = adapter.extract_auth(provider) {
-                    let key = &auth.api_key;
-                    // OAuth access_token 以 ya29. 开头
-                    if key.starts_with("ya29.") {
-                        return ProviderType::GeminiCli;
-                    }
-                    // JSON 格式的 OAuth 凭证
-                    if key.starts_with('{') {
-                        return ProviderType::GeminiCli;
-                    }
-                }
-                ProviderType::Gemini
-            }
-            AppType::GrokBuild => ProviderType::Codex,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => ProviderType::Codex,
             // Kimi Code 暂无专属代理适配器（M1 不走 cc-switch 本地代理），按
             // OpenAI 兼容协议归到 Codex 类型占位
             AppType::KimiCode => ProviderType::Codex,
@@ -218,8 +174,6 @@ impl ProviderType {
             ProviderType::Claude => "claude",
             ProviderType::ClaudeAuth => "claude_auth",
             ProviderType::Codex => "codex",
-            ProviderType::Gemini => "gemini",
-            ProviderType::GeminiCli => "gemini_cli",
             ProviderType::OpenRouter => "openrouter",
             ProviderType::GitHubCopilot => "github_copilot",
             ProviderType::CodexOAuth => "codex_oauth",
@@ -242,8 +196,6 @@ impl std::str::FromStr for ProviderType {
             "claude" => Ok(ProviderType::Claude),
             "claude_auth" | "claude-auth" => Ok(ProviderType::ClaudeAuth),
             "codex" => Ok(ProviderType::Codex),
-            "gemini" => Ok(ProviderType::Gemini),
-            "gemini_cli" | "gemini-cli" => Ok(ProviderType::GeminiCli),
             "openrouter" => Ok(ProviderType::OpenRouter),
             "github_copilot" | "github-copilot" | "githubcopilot" => {
                 Ok(ProviderType::GitHubCopilot)
@@ -258,11 +210,8 @@ impl std::str::FromStr for ProviderType {
 /// 根据 AppType 获取对应的适配器
 pub fn get_adapter(app_type: &AppType) -> Box<dyn ProviderAdapter> {
     match app_type {
-        AppType::Claude | AppType::ClaudeDesktop => Box::new(ClaudeAdapter::new()),
+        AppType::Claude => Box::new(ClaudeAdapter::new()),
         AppType::Codex => Box::new(CodexAdapter::new()),
-        AppType::Gemini => Box::new(GeminiAdapter::new()),
-        AppType::GrokBuild => Box::new(CodexAdapter::new()),
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Box::new(CodexAdapter::new()),
         // Kimi Code 暂无专属代理适配器，复用 Codex 适配器（TOML 配置形态相近）
         AppType::KimiCode => Box::new(CodexAdapter::new()),
     }
@@ -279,7 +228,6 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::CodexOAuth
         | ProviderType::XaiOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
-        ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }
 }
 
@@ -310,8 +258,6 @@ mod tests {
         assert!(!ProviderType::Claude.needs_transform());
         assert!(!ProviderType::ClaudeAuth.needs_transform());
         assert!(!ProviderType::Codex.needs_transform());
-        assert!(!ProviderType::Gemini.needs_transform());
-        assert!(!ProviderType::GeminiCli.needs_transform());
         assert!(!ProviderType::OpenRouter.needs_transform());
         assert!(ProviderType::GitHubCopilot.needs_transform());
     }
@@ -329,14 +275,6 @@ mod tests {
         assert_eq!(
             ProviderType::Codex.default_endpoint(),
             "https://api.openai.com"
-        );
-        assert_eq!(
-            ProviderType::Gemini.default_endpoint(),
-            "https://generativelanguage.googleapis.com"
-        );
-        assert_eq!(
-            ProviderType::GeminiCli.default_endpoint(),
-            "https://generativelanguage.googleapis.com"
         );
         assert_eq!(
             ProviderType::OpenRouter.default_endpoint(),
@@ -367,18 +305,6 @@ mod tests {
             ProviderType::Codex
         );
         assert_eq!(
-            "gemini".parse::<ProviderType>().unwrap(),
-            ProviderType::Gemini
-        );
-        assert_eq!(
-            "gemini_cli".parse::<ProviderType>().unwrap(),
-            ProviderType::GeminiCli
-        );
-        assert_eq!(
-            "gemini-cli".parse::<ProviderType>().unwrap(),
-            ProviderType::GeminiCli
-        );
-        assert_eq!(
             "openrouter".parse::<ProviderType>().unwrap(),
             ProviderType::OpenRouter
         );
@@ -406,8 +332,6 @@ mod tests {
         assert_eq!(ProviderType::Claude.as_str(), "claude");
         assert_eq!(ProviderType::ClaudeAuth.as_str(), "claude_auth");
         assert_eq!(ProviderType::Codex.as_str(), "codex");
-        assert_eq!(ProviderType::Gemini.as_str(), "gemini");
-        assert_eq!(ProviderType::GeminiCli.as_str(), "gemini_cli");
         assert_eq!(ProviderType::OpenRouter.as_str(), "openrouter");
         assert_eq!(ProviderType::GitHubCopilot.as_str(), "github_copilot");
         assert_eq!(ProviderType::XaiOAuth.as_str(), "xai_oauth");
@@ -427,9 +351,6 @@ mod tests {
         // Test deserialization
         let deserialized: ProviderType = serde_json::from_str("\"claude\"").unwrap();
         assert_eq!(deserialized, ProviderType::Claude);
-
-        let deserialized: ProviderType = serde_json::from_str("\"gemini_cli\"").unwrap();
-        assert_eq!(deserialized, ProviderType::GeminiCli);
     }
 
     #[test]
@@ -485,42 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_app_type_gemini_api_key() {
-        let provider = create_provider(json!({
-            "env": {
-                "GEMINI_API_KEY": "AIza-test-key"
-            }
-        }));
-
-        let provider_type = ProviderType::from_app_type_and_config(&AppType::Gemini, &provider);
-        assert_eq!(provider_type, ProviderType::Gemini);
-    }
-
-    #[test]
-    fn test_from_app_type_gemini_cli_oauth() {
-        let provider = create_provider(json!({
-            "env": {
-                "GEMINI_API_KEY": "ya29.test-access-token"
-            }
-        }));
-
-        let provider_type = ProviderType::from_app_type_and_config(&AppType::Gemini, &provider);
-        assert_eq!(provider_type, ProviderType::GeminiCli);
-    }
-
-    #[test]
-    fn test_from_app_type_gemini_cli_json() {
-        let provider = create_provider(json!({
-            "env": {
-                "GEMINI_API_KEY": "{\"access_token\":\"ya29.test\",\"refresh_token\":\"1//test\"}"
-            }
-        }));
-
-        let provider_type = ProviderType::from_app_type_and_config(&AppType::Gemini, &provider);
-        assert_eq!(provider_type, ProviderType::GeminiCli);
-    }
-
-    #[test]
     fn test_get_adapter_for_provider_type() {
         let adapter = get_adapter_for_provider_type(&ProviderType::Claude);
         assert_eq!(adapter.name(), "Claude");
@@ -536,11 +421,5 @@ mod tests {
 
         let adapter = get_adapter_for_provider_type(&ProviderType::Codex);
         assert_eq!(adapter.name(), "Codex");
-
-        let adapter = get_adapter_for_provider_type(&ProviderType::Gemini);
-        assert_eq!(adapter.name(), "Gemini");
-
-        let adapter = get_adapter_for_provider_type(&ProviderType::GeminiCli);
-        assert_eq!(adapter.name(), "Gemini");
     }
 }

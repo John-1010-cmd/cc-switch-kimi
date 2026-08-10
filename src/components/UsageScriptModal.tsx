@@ -15,7 +15,6 @@ import {
   extractCodexExperimentalBearerToken,
   extractKimiCodeCredentials,
 } from "@/utils/providerConfigUtils";
-import { parseGrokBuildConfig } from "@/utils/grokBuildConfig";
 import JsonEditor from "./JsonEditor";
 import * as prettier from "prettier/standalone";
 import * as parserBabel from "prettier/parser-babel";
@@ -161,8 +160,7 @@ function detectBalanceProvider(baseUrl: string | undefined): boolean {
 }
 
 function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
-  if (!["claude", "codex", "gemini", "grokbuild", "kimi-code"].includes(appId))
-    return false;
+  if (!["claude", "codex", "kimi-code"].includes(appId)) return false;
   if (provider.category === "official") return true;
 
   const config = provider.settingsConfig as Record<string, any>;
@@ -181,21 +179,8 @@ function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
       (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""))
     );
   }
-  if (appId === "gemini") {
-    const env = config?.env || {};
-    const apiKey = env.GEMINI_API_KEY;
-    const baseUrl = env.GOOGLE_GEMINI_BASE_URL;
-    return (
-      (!apiKey || (typeof apiKey === "string" && apiKey.trim() === "")) &&
-      (!baseUrl || (typeof baseUrl === "string" && baseUrl.trim() === ""))
-    );
-  }
-  // grokbuild 不做配置启发式，只认上方的 category === "official"：官方态判定
-  // 在后端是 TOML 解析（grok_config::is_official_live_config），正则无法忠实
-  // 镜像（引号键/inline table/非法 TOML 均会误判为官方），误判会让本组件的
-  // state 初始化丢弃已保存的非官方脚本。claude/codex/gemini 的启发式建立在
-  // 已解析的 JSON 字段上是精确的，不受此限。官方判定以 category 为 SSOT 的
-  // 理由见 ProviderCard 中的注释。
+  // claude/codex 的启发式建立在已解析的 JSON 字段上是精确的。
+  // 官方判定以 category 为 SSOT 的理由见 ProviderCard 中的注释。
   return false;
 }
 
@@ -238,7 +223,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         if (!config) return { apiKey: undefined, baseUrl: undefined };
 
         // 处理不同应用的配置格式
-        if (appId === "claude" || appId === "claude-desktop") {
+        if (appId === "claude") {
           // Claude / Claude Desktop: { env: { ANTHROPIC_AUTH_TOKEN | ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL } }
           // Key fallbacks mirror the backend resolver (Provider::resolve_usage_credentials).
           const env = (config as any).env || {};
@@ -263,46 +248,10 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey,
             baseUrl: extractCodexBaseUrl(configToml),
           };
-        } else if (appId === "gemini") {
-          // Gemini: { env: { GEMINI_API_KEY, GOOGLE_GEMINI_BASE_URL } }
-          // Key fallback mirrors the backend resolver (Provider::resolve_usage_credentials).
-          const env = (config as any).env || {};
-          return {
-            apiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
-            baseUrl: env.GOOGLE_GEMINI_BASE_URL,
-          };
-        } else if (appId === "grokbuild") {
-          const grokConfig = parseGrokBuildConfig(
-            (config as any).config,
-            provider.name,
-          );
-          return {
-            apiKey: grokConfig.apiKey,
-            baseUrl: grokConfig.baseUrl,
-          };
         } else if (appId === "kimi-code") {
           // Kimi Code: settingsConfig.config 是整份 config.toml 文本，凭据在
           // [providers.*] 表的 base_url / api_key（语义镜像后端 resolver）
           return extractKimiCodeCredentials((config as any).config);
-        } else if (appId === "hermes") {
-          // Hermes: settingsConfig 顶层扁平（snake_case，对应 config.yaml）
-          return {
-            apiKey: (config as any).api_key,
-            baseUrl: (config as any).base_url,
-          };
-        } else if (appId === "openclaw") {
-          // OpenClaw: settingsConfig 顶层扁平（camelCase，对应 openclaw.json）
-          return {
-            apiKey: (config as any).apiKey,
-            baseUrl: (config as any).baseUrl,
-          };
-        } else if (appId === "opencode") {
-          // OpenCode (OMO): 凭据嵌在 options.{baseURL, apiKey}（SDK options 对象）
-          const options = (config as any).options || {};
-          return {
-            apiKey: options.apiKey,
-            baseUrl: options.baseURL,
-          };
         }
         return { apiKey: undefined, baseUrl: undefined };
       } catch (error) {
@@ -477,8 +426,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     setShowUsageConfirm(false);
     try {
       if (settingsData) {
-        const { webdavSync: _, ...rest } = settingsData;
-        await settingsApi.save({ ...rest, usageConfirmed: true });
+        await settingsApi.save({ ...settingsData, usageConfirmed: true });
         await queryClient.invalidateQueries({ queryKey: ["settings"] });
       }
     } catch (error) {

@@ -200,15 +200,10 @@ export interface UsageRangeSelection {
  * only ever show a partial number and mislead users into reading it as the
  * Desktop's full usage. The backend collapses `claude-desktop → claude` in
  * every dashboard query (see `folded_app_type_sql`).
- * `opencode` / `openclaw` / `hermes` have no proxy handler at all — they
- * appear only as managed apps elsewhere.
  */
 export type AppType =
   | "claude"
   | "codex"
-  | "gemini"
-  | "grokbuild"
-  | "opencode"
   | "kimi-code";
 
 export type AppTypeFilter = "all" | AppType;
@@ -216,9 +211,6 @@ export type AppTypeFilter = "all" | AppType;
 export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "claude",
   "codex",
-  "gemini",
-  "grokbuild",
-  "opencode",
   "kimi-code",
 ];
 
@@ -227,7 +219,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
  * subtract `cacheReadTokens` to get fresh-input semantics — see
  * [getFreshInputTokens]).
  *
- * For the OpenAI-style proxy apps (codex/gemini/grokbuild) there is a second
+ * For the OpenAI-style proxy apps (codex) there is a second
  * consequence: the protocol does not report cache _creation_ separately, only
  * cache _reads_, so `cacheCreationTokens` is always 0 and the UI labels it as
  * N/A rather than 0. That "always 0 → N/A" assumption applies ONLY to those
@@ -239,8 +231,6 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
  */
 export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
   "codex",
-  "gemini",
-  "grokbuild",
   "kimi-code",
 ]);
 

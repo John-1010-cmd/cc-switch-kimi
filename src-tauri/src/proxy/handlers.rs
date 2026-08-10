@@ -13,7 +13,7 @@ use super::{
     forwarder::ActiveConnectionGuard,
     handler_config::{
         claude_stream_usage_event_filter, codex_stream_usage_event_filter, CLAUDE_PARSER_CONFIG,
-        CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+        CODEX_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
     providers::{
@@ -26,15 +26,13 @@ use super::{
             responses_sse_events_from_anthropic_message,
         },
         streaming_codex_chat::create_responses_sse_stream_from_chat_with_context,
-        streaming_gemini::create_anthropic_sse_stream_from_gemini,
         streaming_responses::create_anthropic_sse_stream_from_responses,
-        transform, transform_codex_anthropic, transform_codex_chat,
-        transform_codex_responses_namespace, transform_gemini, transform_responses,
+        transform, transform_codex_anthropic, transform_codex_chat, transform_responses,
     },
     response_processor::{
-        create_logged_passthrough_stream, create_usage_collector, process_response,
-        read_decoded_body, strip_entity_headers_for_rebuilt_body,
-        strip_hop_by_hop_response_headers, usage_logging_enabled, SseUsageCollector,
+        create_logged_passthrough_stream, process_response, read_decoded_body,
+        strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
+        usage_logging_enabled, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -119,38 +117,6 @@ pub async fn handle_messages(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     handle_messages_for_app(state, request, AppType::Claude, "Claude", "claude", None).await
-}
-
-pub async fn handle_claude_desktop_messages(
-    State(state): State<ProxyState>,
-    request: axum::extract::Request,
-) -> Result<axum::response::Response, ProxyError> {
-    validate_claude_desktop_gateway_auth(&state, request.headers())?;
-    handle_messages_for_app(
-        state,
-        request,
-        AppType::ClaudeDesktop,
-        "Claude Desktop",
-        "claude-desktop",
-        Some("/claude-desktop"),
-    )
-    .await
-}
-
-pub async fn handle_claude_desktop_models(
-    State(state): State<ProxyState>,
-    headers: axum::http::HeaderMap,
-) -> Result<Json<Value>, ProxyError> {
-    validate_claude_desktop_gateway_auth(&state, &headers)?;
-    let providers = state
-        .provider_router
-        .select_providers("claude-desktop")
-        .await
-        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
-    let provider = providers.first().ok_or(ProxyError::NoAvailableProvider)?;
-    let response = crate::claude_desktop_config::model_list_response(provider)
-        .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
-    Ok(Json(response))
 }
 
 async fn handle_messages_for_app(
@@ -253,33 +219,6 @@ async fn handle_messages_for_app(
     .await
 }
 
-fn validate_claude_desktop_gateway_auth(
-    state: &ProxyState,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), ProxyError> {
-    let expected = crate::claude_desktop_config::get_or_create_gateway_token(state.db.as_ref())
-        .map_err(|e| ProxyError::AuthError(e.to_string()))?;
-    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
-        return Err(ProxyError::AuthError(
-            "Claude Desktop gateway 缺少 Authorization 头".to_string(),
-        ));
-    };
-    let value = value
-        .to_str()
-        .map_err(|_| ProxyError::AuthError("Authorization 头格式无效".to_string()))?;
-    let token = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-        .unwrap_or("")
-        .trim();
-    if token != expected {
-        return Err(ProxyError::AuthError(
-            "Claude Desktop gateway token 无效".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Claude 格式转换处理（独有逻辑）
 ///
 /// 支持 OpenAI Chat Completions 和 Responses API 两种格式的转换
@@ -371,7 +310,7 @@ async fn handle_claude_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
     state: &ProxyState,
-    original_body: &Value,
+    _original_body: &Value,
     is_stream: bool,
     api_format: &str,
     connection_guard: Option<ActiveConnectionGuard>,
@@ -400,8 +339,6 @@ async fn handle_claude_transform(
             is_codex_oauth,
         )
     };
-    let tool_schema_hints = transform_gemini::extract_anthropic_tool_schema_hints(original_body);
-    let tool_schema_hints = (!tool_schema_hints.is_empty()).then_some(tool_schema_hints);
 
     if use_streaming {
         // 根据 api_format 选择流式转换器
@@ -410,14 +347,6 @@ async fn handle_claude_transform(
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
             Box::new(Box::pin(create_anthropic_sse_stream_from_responses(stream)))
-        } else if api_format == "gemini_native" {
-            Box::new(Box::pin(create_anthropic_sse_stream_from_gemini(
-                stream,
-                Some(state.gemini_shadow.clone()),
-                Some(ctx.provider.id.clone()),
-                Some(ctx.session_id.clone()),
-                tool_schema_hints.clone(),
-            )))
         } else {
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
@@ -528,8 +457,8 @@ async fn handle_claude_transform(
             // 兜底嗅探（#2234）：部分网关对 stream:false 强制返回 SSE 体，却把
             // Content-Type 标成 application/json 等，is_sse() 的 header 检查失效。
             // 此时按 SSE 聚合成单个 JSON 再走既有非流转换器，客户端仍收到
-            // Anthropic JSON，非流语义不变。gemini_native 暂无聚合器，落诊断错误。
-            Err(_) if body_looks_like_sse(&body_str) && api_format != "gemini_native" => {
+            // Anthropic JSON，非流语义不变。
+            Err(_) if body_looks_like_sse(&body_str) => {
                 log::warn!(
                     "[Claude] 上游对非流请求返回未标记的 SSE 体（api_format={api_format}），按 SSE 聚合兜底"
                 );
@@ -579,14 +508,6 @@ async fn handle_claude_transform(
     // 根据 api_format 选择非流式转换器
     let transform_result = if api_format == "openai_responses" {
         transform_responses::responses_to_anthropic(upstream_response)
-    } else if api_format == "gemini_native" {
-        transform_gemini::gemini_to_anthropic_with_shadow_and_hints(
-            upstream_response,
-            Some(state.gemini_shadow.as_ref()),
-            Some(&ctx.provider.id),
-            Some(&ctx.session_id),
-            tool_schema_hints.as_ref(),
-        )
     } else {
         transform::openai_to_anthropic(upstream_response)
     };
@@ -768,20 +689,6 @@ pub async fn handle_responses(
     handle_responses_for_app(state, request, AppType::Codex, "Codex", "codex").await
 }
 
-pub async fn handle_grokbuild_responses(
-    State(state): State<ProxyState>,
-    request: axum::extract::Request,
-) -> Result<axum::response::Response, ProxyError> {
-    handle_responses_for_app(
-        state,
-        request,
-        AppType::GrokBuild,
-        "Grok Build",
-        "grokbuild",
-    )
-    .await
-}
-
 async fn handle_responses_for_app(
     state: ProxyState,
     request: axum::extract::Request,
@@ -812,10 +719,6 @@ async fn handle_responses_for_app(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let codex_tool_context = transform_codex_chat::build_codex_tool_context_from_request(&body);
-    // Captured before `body` is moved into the forwarder: the flat-name →
-    // {namespace, name} map used to restore the native Responses upstream's
-    // function-call names (see the namespace-restore dispatch below).
-    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
 
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
@@ -869,24 +772,6 @@ async fn handle_responses_for_app(
         .await;
     }
 
-    // Native Responses passthrough to a strict gateway (xAI): the request-side
-    // flatten (in the forwarder) turned Codex `namespace` tools into flat
-    // function tools, so the upstream returns flat function-call names. Restore
-    // them to `{name, namespace}` so the Codex client matches them against its
-    // namespaced tool registry.
-    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
-        && !namespace_restore_map.is_empty()
-    {
-        return handle_codex_responses_namespace_restore(
-            response,
-            &ctx,
-            &state,
-            connection_guard,
-            namespace_restore_map,
-        )
-        .await;
-    }
-
     process_response(
         response,
         &ctx,
@@ -903,20 +788,6 @@ pub async fn handle_responses_compact(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     handle_responses_compact_for_app(state, request, AppType::Codex, "Codex", "codex").await
-}
-
-pub async fn handle_grokbuild_responses_compact(
-    State(state): State<ProxyState>,
-    request: axum::extract::Request,
-) -> Result<axum::response::Response, ProxyError> {
-    handle_responses_compact_for_app(
-        state,
-        request,
-        AppType::GrokBuild,
-        "Grok Build",
-        "grokbuild",
-    )
-    .await
 }
 
 async fn handle_responses_compact_for_app(
@@ -949,7 +820,6 @@ async fn handle_responses_compact_for_app(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let codex_tool_context = transform_codex_chat::build_codex_tool_context_from_request(&body);
-    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
 
     let forwarder = ctx.create_forwarder(&state);
     let mut result = match forwarder
@@ -1003,19 +873,6 @@ async fn handle_responses_compact_for_app(
         .await;
     }
 
-    if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider)
-        && !namespace_restore_map.is_empty()
-    {
-        return handle_codex_responses_namespace_restore(
-            response,
-            &ctx,
-            &state,
-            connection_guard,
-            namespace_restore_map,
-        )
-        .await;
-    }
-
     process_response(
         response,
         &ctx,
@@ -1024,154 +881,6 @@ async fn handle_responses_compact_for_app(
         connection_guard,
     )
     .await
-}
-
-/// Response handler for the native Responses passthrough to a strict gateway
-/// (xAI), restoring the flattened `function_call` names produced by the
-/// request-side namespace flatten. Success bodies only carry a light rename;
-/// error bodies and everything unrelated pass through unchanged. Usage is
-/// collected exactly as `process_response` would (same `CODEX_PARSER_CONFIG`).
-async fn handle_codex_responses_namespace_restore(
-    response: super::hyper_client::ProxyResponse,
-    ctx: &RequestContext,
-    state: &ProxyState,
-    connection_guard: Option<ActiveConnectionGuard>,
-    restore_map: std::collections::HashMap<
-        String,
-        transform_codex_responses_namespace::NamespacedName,
-    >,
-) -> Result<axum::response::Response, ProxyError> {
-    let status = response.status();
-
-    // Error bodies (and any non-SSE, non-success response) never contain
-    // restorable function calls; hand them to the generic passthrough so error
-    // shape and usage handling stay identical to the untransformed path.
-    if !status.is_success() {
-        return process_response(response, ctx, state, &CODEX_PARSER_CONFIG, connection_guard)
-            .await;
-    }
-
-    if response.is_sse() {
-        let mut response_headers = response.headers().clone();
-        strip_hop_by_hop_response_headers(&mut response_headers);
-
-        let mut builder = axum::response::Response::builder().status(status);
-        for (key, value) in &response_headers {
-            builder = builder.header(key, value);
-        }
-
-        let restore_stream =
-            transform_codex_responses_namespace::create_namespace_restore_sse_stream(
-                response.bytes_stream(),
-                restore_map,
-            );
-        let usage_collector =
-            create_usage_collector(ctx, state, status.as_u16(), &CODEX_PARSER_CONFIG);
-        let logged_stream = create_logged_passthrough_stream(
-            restore_stream,
-            ctx.tag,
-            usage_collector,
-            ctx.streaming_timeout_config(),
-            connection_guard,
-        );
-
-        let body = axum::body::Body::from_stream(logged_stream);
-        return builder.body(body).map_err(|e| {
-            log::error!("[{}] 构建 namespace 还原流式响应失败: {e}", ctx.tag);
-            ProxyError::Internal(format!("Failed to build streaming response: {e}"))
-        });
-    }
-
-    // Non-streaming: restore the flattened function-call names in the full body,
-    // then account usage from the (restore-neutral) Responses payload.
-    let _connection_guard = connection_guard;
-    let body_timeout =
-        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
-            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
-        } else {
-            std::time::Duration::ZERO
-        };
-    let (mut response_headers, status, body_bytes) =
-        read_decoded_body(response, ctx.tag, body_timeout).await?;
-    strip_hop_by_hop_response_headers(&mut response_headers);
-
-    // Restore names when the body parses as JSON; otherwise pass the bytes
-    // through untouched (a native Responses non-stream body is always JSON, so
-    // this only guards against a malformed upstream).
-    let restored_bytes = match serde_json::from_slice::<Value>(&body_bytes) {
-        Ok(mut value) => {
-            transform_codex_responses_namespace::restore_response_namespaces(
-                &mut value,
-                &restore_map,
-            );
-            if let Some(usage) =
-                TokenUsage::from_codex_response_auto(&value).filter(TokenUsage::has_billable_tokens)
-            {
-                let model = value
-                    .get("model")
-                    .and_then(|m| m.as_str())
-                    .filter(|m| !m.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| ctx.outbound_model.clone())
-                    .unwrap_or_else(|| ctx.request_model.clone());
-                let request_model = ctx.request_model.clone();
-                let outbound_model = ctx
-                    .outbound_model
-                    .clone()
-                    .unwrap_or_else(|| ctx.request_model.clone());
-                let app_type_str = ctx.app_type_str;
-                tokio::spawn({
-                    let state = state.clone();
-                    let provider_id = ctx.provider.id.clone();
-                    let session_id = ctx.session_id.clone();
-                    let latency_ms = ctx.latency_ms();
-                    async move {
-                        log_usage(
-                            &state,
-                            &provider_id,
-                            app_type_str,
-                            &model,
-                            &request_model,
-                            &outbound_model,
-                            usage,
-                            latency_ms,
-                            None,
-                            false,
-                            status.as_u16(),
-                            Some(session_id),
-                        )
-                        .await;
-                    }
-                });
-            }
-            match serde_json::to_vec(&value) {
-                Ok(bytes) => Bytes::from(bytes),
-                Err(e) => {
-                    log::error!("[{}] 序列化 namespace 还原响应失败: {e}", ctx.tag);
-                    body_bytes
-                }
-            }
-        }
-        Err(_) => body_bytes,
-    };
-
-    strip_entity_headers_for_rebuilt_body(&mut response_headers);
-    response_headers.remove(axum::http::header::CONTENT_TYPE);
-
-    let mut builder = axum::response::Response::builder().status(status);
-    for (key, value) in response_headers.iter() {
-        builder = builder.header(key, value);
-    }
-    builder = builder.header(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    builder
-        .body(axum::body::Body::from(restored_bytes))
-        .map_err(|e| {
-            log::error!("[{}] 构建 namespace 还原响应失败: {e}", ctx.tag);
-            ProxyError::Internal(format!("Failed to build response: {e}"))
-        })
 }
 
 async fn handle_codex_chat_to_responses_transform(
@@ -1913,88 +1622,6 @@ fn compact_error_message(message: &str, max_chars: usize) -> String {
         .trim_end()
         .to_string();
     format!("{truncated}…(truncated)")
-}
-
-// ============================================================================
-// Gemini API 处理器
-// ============================================================================
-
-/// 处理 Gemini API 请求（透传，包括查询参数）
-pub async fn handle_gemini(
-    State(state): State<ProxyState>,
-    uri: axum::http::Uri,
-    request: axum::extract::Request,
-) -> Result<axum::response::Response, ProxyError> {
-    let (parts, req_body) = request.into_parts();
-    let method = parts.method.clone();
-    let headers = parts.headers;
-    let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
-    // GET 类只读端点（/v1beta/models、/v1beta/models/<model> 等）没有请求体，
-    // 不能强制 parse 为 JSON —— 否则空 body 会被拒绝。
-    let body: Value = if body_bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&body_bytes)
-            .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?
-    };
-
-    // Gemini 的模型名称在 URI 中
-    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
-        .await?
-        .with_model_from_uri(&uri);
-
-    // 提取完整的路径和查询参数
-    let endpoint = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or(uri.path());
-
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let forwarder = ctx.create_forwarder(&state);
-    let mut result = match forwarder
-        .forward_with_retry(
-            &AppType::Gemini,
-            method,
-            endpoint,
-            body,
-            headers,
-            extensions,
-            ctx.get_providers(),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(mut err) => {
-            if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
-            }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
-            return Err(err.error);
-        }
-    };
-
-    let connection_guard = result.connection_guard.take();
-    ctx.outbound_model = result.outbound_model.take();
-    ctx.provider = result.provider;
-    let response = result.response;
-
-    process_response(
-        response,
-        &ctx,
-        &state,
-        &GEMINI_PARSER_CONFIG,
-        connection_guard,
-    )
-    .await
 }
 
 fn should_use_claude_transform_streaming(

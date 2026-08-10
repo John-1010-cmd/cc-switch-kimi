@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
-use crate::commands::sync_support::{
-    post_sync_warning_from_result, run_post_import_sync, success_payload_with_warning,
-};
 use crate::database::backup::BackupEntry;
 use crate::database::Database;
 use crate::error::AppError;
@@ -44,15 +41,14 @@ pub async fn import_config_from_file(
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let db = state.db.clone();
-    let db_for_sync = db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path_buf = PathBuf::from(&filePath);
         let backup_id = db.import_sql(&path_buf)?;
-        let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
-        if let Some(msg) = warning.as_ref() {
-            log::warn!("[Import] post-import sync warning: {msg}");
-        }
-        Ok::<_, AppError>(success_payload_with_warning(backup_id, warning))
+        Ok::<_, AppError>(json!({
+            "success": true,
+            "message": "SQL imported successfully",
+            "backupId": backup_id
+        }))
     })
     .await
     .map_err(|e| format!("导入配置失败: {e}"))?
@@ -102,20 +98,6 @@ pub async fn open_file_dialog<R: tauri::Runtime>(
     let result = dialog
         .file()
         .add_filter("SQL", &["sql"])
-        .blocking_pick_file();
-
-    Ok(result.map(|p| p.to_string()))
-}
-
-/// 打开 ZIP 文件选择对话框
-#[tauri::command]
-pub async fn open_zip_file_dialog<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
-        .add_filter("ZIP / Skill", &["zip", "skill"])
         .blocking_pick_file();
 
     Ok(result.map(|p| p.to_string()))

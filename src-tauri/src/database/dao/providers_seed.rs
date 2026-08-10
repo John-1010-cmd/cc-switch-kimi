@@ -6,14 +6,10 @@
 //! 字段与前端预设保持一致，参见：
 //! - `src/config/claudeProviderPresets.ts`（"Claude Official"）
 //! - `src/config/codexProviderPresets.ts`（"OpenAI Official"）
-//! - `src/config/geminiProviderPresets.ts`（"Google Official"）
-//! - `src/components/providers/forms/GrokBuildProviderForm.tsx`（"Grok Official"）
 
 use crate::app_config::AppType;
 
-pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
 pub(crate) const CODEX_OFFICIAL_PROVIDER_ID: &str = "codex-official";
-pub(crate) const GROKBUILD_OFFICIAL_PROVIDER_ID: &str = "grokbuild-official";
 pub(crate) const KIMI_CODE_OFFICIAL_PROVIDER_ID: &str = "kimi-code-official";
 
 /// 单条官方供应商种子定义。
@@ -28,7 +24,7 @@ pub(crate) struct OfficialProviderSeed {
     pub settings_config_json: &'static str,
 }
 
-/// Claude / Claude Desktop / Codex / Gemini 的官方预设。
+/// Claude / Codex 的官方预设。
 ///
 /// id 固定，便于幂等检查；name 直接用英文原名（与前端预设一致），不做 i18n。
 pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
@@ -43,16 +39,6 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         settings_config_json: r#"{"env":{}}"#,
     },
     OfficialProviderSeed {
-        id: CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID,
-        app_type: AppType::ClaudeDesktop,
-        name: "Claude Desktop Official",
-        website_url: "https://claude.ai/download",
-        icon: "anthropic",
-        icon_color: "#D4915D",
-        // 空 env 只是占位；切换该 provider 时会恢复 Claude Desktop 1P 模式
-        settings_config_json: r#"{"env":{}}"#,
-    },
-    OfficialProviderSeed {
         id: CODEX_OFFICIAL_PROVIDER_ID,
         app_type: AppType::Codex,
         name: "OpenAI Official",
@@ -63,26 +49,6 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         settings_config_json: r#"{"auth":{},"config":""}"#,
     },
     OfficialProviderSeed {
-        id: "gemini-official",
-        app_type: AppType::Gemini,
-        name: "Google Official",
-        website_url: "https://ai.google.dev/",
-        icon: "gemini",
-        icon_color: "#4285F4",
-        // 空 env + 空 config 让用户走 Google OAuth
-        settings_config_json: r#"{"env":{},"config":{}}"#,
-    },
-    OfficialProviderSeed {
-        id: GROKBUILD_OFFICIAL_PROVIDER_ID,
-        app_type: AppType::GrokBuild,
-        name: "Grok Official",
-        website_url: "https://x.ai/grok",
-        icon: "grok",
-        icon_color: "currentColor",
-        // 空 config = 不写自定义模型表，Grok CLI 回落到自带的 xAI OAuth 登录
-        settings_config_json: r#"{"config":""}"#,
-    },
-    OfficialProviderSeed {
         id: KIMI_CODE_OFFICIAL_PROVIDER_ID,
         app_type: AppType::KimiCode,
         name: "Kimi For Coding Official",
@@ -90,8 +56,7 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         icon: "kimi",
         icon_color: "currentColor",
         // §2.2 托管模板：managed:kimi-code block 是登录态路由声明（OAuth 凭据在
-        // credentials/，由 CLI /login 管理，cc-switch 不接管）；形态对齐 GrokBuild
-        // 种子的 {"config": <纯 TOML 文本>} 包装。
+        // credentials/，由 CLI /login 管理，cc-switch 不接管）。
         settings_config_json: r#"{"config":"default_model = \"managed:kimi-code/kimi-for-coding\"\n\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\noauth = { storage = \"file\", key = \"oauth/kimi-code\" }\n\n[models.\"managed:kimi-code/kimi-for-coding\"]\nprovider = \"managed:kimi-code\"\nmodel = \"kimi-for-coding\"\nmax_context_size = 262144\n"}"#,
     },
 ];
@@ -106,30 +71,6 @@ pub(crate) fn is_official_seed_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn official_seeds_include_claude_desktop() {
-        let seed = OFFICIAL_SEEDS
-            .iter()
-            .find(|seed| seed.id == CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID)
-            .expect("claude desktop official seed");
-
-        assert_eq!(seed.app_type, AppType::ClaudeDesktop);
-        assert!(is_official_seed_id(CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID));
-    }
-
-    #[test]
-    fn official_seeds_include_grokbuild() {
-        let seed = OFFICIAL_SEEDS
-            .iter()
-            .find(|seed| seed.id == GROKBUILD_OFFICIAL_PROVIDER_ID)
-            .expect("grok build official seed");
-
-        assert_eq!(seed.app_type, AppType::GrokBuild);
-        assert!(is_official_seed_id(GROKBUILD_OFFICIAL_PROVIDER_ID));
-        // 空 config = 官方登录态：切换时不注入自定义模型表
-        assert_eq!(seed.settings_config_json, r#"{"config":""}"#);
-    }
 
     #[test]
     fn official_seeds_include_kimi_code_managed_template() {
