@@ -244,8 +244,7 @@ export function ProviderCard({
         shouldUseGreen &&
           "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
         shouldUseBlue && "border-blue-500/60 shadow-sm shadow-blue-500/10",
-        !isActiveProvider &&
-          "hover:shadow-sm",
+        !isActiveProvider && "hover:shadow-sm",
         dragHandleProps?.isDragging &&
           "cursor-grabbing border-primary shadow-lg scale-105 z-10",
       )}
@@ -256,9 +255,7 @@ export function ProviderCard({
           shouldUseGreen && "from-emerald-500/10",
           shouldUseBlue && "from-blue-500/10",
           !shouldUseGreen && !shouldUseBlue && "from-primary/10",
-          isActiveProvider
-            ? "opacity-100"
-            : "opacity-0",
+          isActiveProvider ? "opacity-100" : "opacity-0",
         )}
       />
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

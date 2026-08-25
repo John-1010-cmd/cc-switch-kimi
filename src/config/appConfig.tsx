@@ -10,17 +10,10 @@ export interface AppConfig {
   badgeClass: string;
 }
 
-export const APP_IDS: AppId[] = [
-  "claude",
-  "codex",
-  "kimi-code",
-];
+export const APP_IDS: AppId[] = ["claude", "codex", "kimi-code"];
 
 /** App IDs shown in Skills panels */
-export const SKILLS_APP_IDS: AppId[] = [
-  "claude",
-  "codex",
-];
+export const SKILLS_APP_IDS: AppId[] = ["claude", "codex"];
 
 /** App IDs shown in MCP panels (Kimi Code 支持 MCP，随 M1 纳入) */
 export const MCP_APP_IDS: AppId[] = [...SKILLS_APP_IDS, "kimi-code"];

@@ -17,11 +17,7 @@ interface AppSwitcherProps {
   visibleApps?: VisibleApps;
 }
 
-const ALL_APPS: AppId[] = [
-  "claude",
-  "codex",
-  "kimi-code",
-];
+const ALL_APPS: AppId[] = ["claude", "codex", "kimi-code"];
 const STORAGE_KEY = "cc-switch-last-app";
 
 export function AppSwitcher({

@@ -89,7 +89,7 @@ impl TrayTexts {
         match language {
             "en" => Self {
                 show_main: "Open main window",
-                open_website: "Open Official Website",
+                open_website: "Open Project Homepage",
                 no_providers_label: "(no providers)",
                 lightweight_mode: "Lightweight Mode",
                 quit: "Quit",
@@ -97,7 +97,7 @@ impl TrayTexts {
             },
             "ja" => Self {
                 show_main: "メインウィンドウを開く",
-                open_website: "公式サイトを開く",
+                open_website: "プロジェクトページを開く",
                 no_providers_label: "(プロバイダーなし)",
                 lightweight_mode: "軽量モード",
                 quit: "終了",
@@ -105,7 +105,7 @@ impl TrayTexts {
             },
             "zh-TW" => Self {
                 show_main: "開啟主介面",
-                open_website: "開啟官方網站",
+                open_website: "開啟專案首頁",
                 no_providers_label: "(無供應商)",
                 lightweight_mode: "輕量模式",
                 quit: "退出",
@@ -113,7 +113,7 @@ impl TrayTexts {
             },
             _ => Self {
                 show_main: "打开主界面",
-                open_website: "打开官方网站",
+                open_website: "打开项目主页",
                 no_providers_label: "(无供应商)",
                 lightweight_mode: "轻量模式",
                 quit: "退出",
@@ -770,8 +770,8 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             }
         }
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
-                log::error!("打开官方网站失败: {e}");
+            if let Err(e) = app.opener().open_url("https://github.com/John-1010-cmd/cc-switch-kimi", None::<String>) {
+                log::error!("打开项目主页失败: {e}");
             }
         }
         "lightweight_mode" => {
@@ -837,7 +837,7 @@ const MIN_TRAY_TITLE_UPDATE_INTERVAL: std::time::Duration = std::time::Duration:
 /// 菜单栏空间有限：紧凑格式 ≤24 字符目标，超宽截断（R8）
 const MAX_TRAY_TITLE_LEN: usize = 24;
 #[cfg(not(target_os = "macos"))]
-const DEFAULT_TRAY_TOOLTIP: &str = "CC Switch";
+const DEFAULT_TRAY_TOOLTIP: &str = "CC Switch Kimi";
 
 /// 组装紧凑标题：周额度 → 5h → TPS 三段按数据可得性省略，超长截断。
 /// 无任何可用段时返回 None（调用方清空标题）。

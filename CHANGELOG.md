@@ -1,9 +1,30 @@
 # Changelog
 
-All notable changes to CC Switch will be documented in this file.
+All notable changes to CC Switch Kimi (and, below v4.0.0, its upstream CC Switch) will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [4.0.0] - 2026-08-25
+
+The first release of the Kimi Code fork line. Six milestones rebuild the app around Kimi Code and then cut everything else: M1 registers Kimi Code as a managed app with full provider switching, M2 pipes local `wire.jsonl` sessions into the usage database, M3 adds second-level live metrics and a macOS menu-bar title, M4 ships seven provider presets with quota integrations, M5 physically removes the apps and modules this fork does not carry, and M6 rebrands the product and repoints distribution to this repository.
+
+### Added
+
+- **Kimi Code as a Managed App**: `AppType::KimiCode` (`"kimi-code"`) joins claude/codex across the full stack — TOML config read/validate/atomic-write for `~/.kimi-code/config.toml` (honoring `KIMI_CODE_HOME`), provider switch writes, MCP sync into `mcp.json`, tray section, credentials extraction, and frontend app registration with a TOML editor form.
+- **Session Usage Ingestion**: `session_usage_kimi.rs` incrementally parses `sessions/<workDir>/<session>/agents/*/wire.jsonl` (`usage.record` turns + `step.end` timing fields) into `proxy_request_logs` with idempotent `INSERT OR IGNORE`, static-pricing cost calculation, `__secondary__` model repair via the nearest `llm.request` alias, and a 60s periodic sync that pushes `usage-log-recorded` events to the dashboard.
+- **Live Metrics & Tray Title**: per-second local file polling feeds generation speed (median of the last 5 valid samples), cache hit rate, and equivalent API cost; the macOS tray title renders a compact `7D 42% · 5H 87% · 31 t/s` string while quota lookups stay on a separate 5-minute channel. Lightweight mode (main window destroyed) keeps the title refreshing.
+- **Seven Kimi Provider Presets**: Kimi For Coding, GLM, MiniMax, Claude, Codex, DeepSeek and Xiaomi MiMo presets generate correct TOML configs; quota routes cover Kimi `/usages`, Zhipu and MiniMax endpoints, with graceful degradation for DeepSeek (balance only) and MiMo (none).
+
+### Changed
+
+- **Rebrand & Distribution**: productName/bundle identifier/window title are now "CC Switch Kimi" / `com.ccswitch.kimi`; version moves to 4.0.0. The updater now polls this fork's own GitHub Releases with a fresh minisign keypair (the upstream key and `dl.ccswitch.io` mirror are gone); in-app links (About page, tray menu, update checks, release notes) point at this repository. App icon gains a "K" badge across all platforms.
+- **README rewritten** for the fork (English + Chinese); Japanese/German upstream READMEs removed.
+
+### Removed
+
+- **Lightweight Trim**: the gemini, grokbuild, opencode, openclaw, hermes and claudeDesktop apps, session browser & workspace, prompts/skills management, WebDAV/S3 backup, speedtest, stream check, profiles, deep links, env-conflict UI, and the universal-config panels — physically deleted while keeping the usage parser pipeline and proxy usage kernel intact. Old `~/.cc-switch` configs and databases open unchanged; leftover rows are ignored.
+- **Upstream release infrastructure**: the R2 mirror workflow and its manifest-rewrite scripts, the flatpak packaging metadata, and sponsor banner assets.
 
 ## [3.19.1] - 2026-07-31
 

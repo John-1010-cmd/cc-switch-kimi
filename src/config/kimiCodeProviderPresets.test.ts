@@ -114,7 +114,9 @@ describe("kimiCodeProviderPresets", () => {
     expect(managed.requiresOAuth).toBe(true);
     const toml = (managed.settingsConfig as { config: string }).config;
     expect(toml).not.toContain("api_key");
-    expect(toml).toContain('oauth = { storage = "file", key = "oauth/kimi-code" }');
+    expect(toml).toContain(
+      'oauth = { storage = "file", key = "oauth/kimi-code" }',
+    );
   });
 
   it("leaves an empty api_key after template substitution on key-based presets", () => {

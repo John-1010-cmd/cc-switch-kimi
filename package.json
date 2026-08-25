@@ -1,7 +1,7 @@
 {
-  "name": "cc-switch",
-  "version": "3.19.1",
-  "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
+  "name": "cc-switch-kimi",
+  "version": "4.0.0",
+  "description": "Provider switcher & usage monitor for Kimi Code, Claude Code and Codex (forked from cc-switch)",
   "type": "module",
   "scripts": {
     "dev": "pnpm tauri dev",

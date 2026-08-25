@@ -182,10 +182,7 @@ export interface ProviderMeta {
   // - "anthropic": 原生 Anthropic Messages API 格式，直接透传
   // - "openai_chat": OpenAI Chat Completions 格式，需要格式转换
   // - "openai_responses": OpenAI Responses API 格式，需要格式转换
-  apiFormat?:
-    | "anthropic"
-    | "openai_chat"
-    | "openai_responses";
+  apiFormat?: "anthropic" | "openai_chat" | "openai_responses";
   // 通用认证绑定
   authBinding?: AuthBinding;
   // Claude 认证字段名
@@ -229,10 +226,7 @@ export type SkillStorageLocation = "cc_switch" | "unified";
 // - "anthropic": 原生 Anthropic Messages API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要格式转换
 // - "openai_responses": OpenAI Responses API 格式，需要格式转换
-export type ClaudeApiFormat =
-  | "anthropic"
-  | "openai_chat"
-  | "openai_responses";
+export type ClaudeApiFormat = "anthropic" | "openai_chat" | "openai_responses";
 
 // Codex API 格式类型
 // - "openai_responses": OpenAI Responses API 格式，直接透传

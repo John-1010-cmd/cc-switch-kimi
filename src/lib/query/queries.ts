@@ -4,17 +4,8 @@ import {
   type UseQueryResult,
   keepPreviousData,
 } from "@tanstack/react-query";
-import {
-  providersApi,
-  settingsApi,
-  usageApi,
-  type AppId,
-} from "@/lib/api";
-import type {
-  Provider,
-  Settings,
-  UsageResult,
-} from "@/types";
+import { providersApi, settingsApi, usageApi, type AppId } from "@/lib/api";
+import type { Provider, Settings, UsageResult } from "@/types";
 import { usageKeys } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
 

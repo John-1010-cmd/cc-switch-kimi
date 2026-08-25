@@ -248,13 +248,7 @@ export function useProviderActions(
         // 错误提示由 mutation 处理
       }
     },
-    [
-      switchProviderMutation,
-      syncClaudePlugin,
-      activeApp,
-      isProxyTakeover,
-      t,
-    ],
+    [switchProviderMutation, syncClaudePlugin, activeApp, isProxyTakeover, t],
   );
 
   // 删除供应商

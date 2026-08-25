@@ -89,10 +89,7 @@ import { resolveManagedAccountId } from "@/lib/authBinding";
 
 type PresetEntry = {
   id: string;
-  preset:
-    | ProviderPreset
-    | CodexProviderPreset
-    | KimiCodeProviderPreset;
+  preset: ProviderPreset | CodexProviderPreset | KimiCodeProviderPreset;
 };
 
 export const normalizeCodexCatalogModelsForSave = (
@@ -225,7 +222,10 @@ function ProviderFormFull({
   const handleCommonConfigConfirm = async () => {
     try {
       if (settingsData) {
-        await settingsApi.save({ ...settingsData, commonConfigConfirmed: true });
+        await settingsApi.save({
+          ...settingsData,
+          commonConfigConfirmed: true,
+        });
         await queryClient.invalidateQueries({ queryKey: ["settings"] });
       }
     } catch (error) {
@@ -836,11 +836,7 @@ function ProviderFormFull({
             }),
           );
         }
-        if (
-          !isCopilotProvider &&
-          !isCodexOauthProvider &&
-          !apiKey.trim()
-        ) {
+        if (!isCopilotProvider && !isCodexOauthProvider && !apiKey.trim()) {
           issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",

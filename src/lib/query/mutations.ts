@@ -7,9 +7,7 @@ import type { Provider, Settings } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
 import { usageKeys } from "@/lib/query/usage";
-import {
-  CODEX_OFFICIAL_PROVIDER_ID,
-} from "@/utils/providerCapabilities";
+import { CODEX_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();

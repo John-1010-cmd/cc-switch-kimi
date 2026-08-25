@@ -43,12 +43,12 @@ describe("detectCodingPlanProvider", () => {
   });
 
   it("bigmodel.cn 首匹配命中 zhipu 而非 zhipu_team（团队版仅靠显式参数路由）", () => {
-    expect(detectCodingPlanProvider("https://open.bigmodel.cn/api/paas/v4")).toBe(
-      "zhipu",
-    );
-    expect(detectCodingPlanProvider("https://open.bigmodel.cn/api/paas/v4")).not.toBe(
-      "zhipu_team",
-    );
+    expect(
+      detectCodingPlanProvider("https://open.bigmodel.cn/api/paas/v4"),
+    ).toBe("zhipu");
+    expect(
+      detectCodingPlanProvider("https://open.bigmodel.cn/api/paas/v4"),
+    ).not.toBe("zhipu_team");
   });
 });
 

@@ -33,7 +33,10 @@ describe("providerNeedsRouting", () => {
         providerNeedsRouting(
           "claude",
           mkProvider({
-            meta: { providerType: "codex_oauth", apiFormat: "openai_responses" },
+            meta: {
+              providerType: "codex_oauth",
+              apiFormat: "openai_responses",
+            },
           }),
         ),
       ).toBe(true);
@@ -75,7 +78,10 @@ describe("providerNeedsRouting", () => {
         providerNeedsRouting(
           "codex",
           mkProvider({
-            meta: { providerType: "codex_oauth", apiFormat: "openai_responses" },
+            meta: {
+              providerType: "codex_oauth",
+              apiFormat: "openai_responses",
+            },
           }),
         ),
       ).toBe(true);

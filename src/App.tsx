@@ -54,19 +54,13 @@ import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
 
-type View =
-  | "providers"
-  | "settings"
-  | "mcp";
+type View = "providers" | "settings" | "mcp";
 
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
 const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = [
-  "claude",
-  "codex",
-];
+const VALID_APPS: AppId[] = ["claude", "codex"];
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -77,11 +71,7 @@ const getInitialApp = (): AppId => {
 };
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
-const VALID_VIEWS: View[] = [
-  "providers",
-  "settings",
-  "mcp",
-];
+const VALID_VIEWS: View[] = ["providers", "settings", "mcp"];
 
 const getInitialView = (): View => {
   const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
@@ -668,7 +658,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <div className="relative inline-flex items-center">
                   <a
-                    href="https://ccswitch.io"
+                    href="https://github.com/John-1010-cmd/cc-switch-kimi"
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
@@ -678,7 +668,7 @@ function App() {
                         : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
                     )}
                   >
-                    CC Switch
+                    CC Switch Kimi
                   </a>
                 </div>
                 <Button
@@ -721,18 +711,18 @@ function App() {
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
             {currentView === "providers" && (
-                <div
-                  className="flex shrink-0 items-center gap-1.5"
-                  style={{ WebkitAppRegion: "no-drag" } as any}
-                >
-                  {settingsData?.enableLocalProxy && (
-                    <ProxyToggle activeApp={activeApp} />
-                  )}
-                  {settingsData?.enableFailoverToggle && (
-                    <FailoverToggle activeApp={activeApp} />
-                  )}
-                </div>
-              )}
+              <div
+                className="flex shrink-0 items-center gap-1.5"
+                style={{ WebkitAppRegion: "no-drag" } as any}
+              >
+                {settingsData?.enableLocalProxy && (
+                  <ProxyToggle activeApp={activeApp} />
+                )}
+                {settingsData?.enableFailoverToggle && (
+                  <FailoverToggle activeApp={activeApp} />
+                )}
+              </div>
+            )}
             <div className="flex flex-1 min-w-0 overflow-x-hidden items-center py-4 pr-2">
               <div
                 className="flex shrink-0 items-center gap-1.5 ml-auto"

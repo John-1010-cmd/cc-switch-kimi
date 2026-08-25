@@ -201,10 +201,7 @@ export interface UsageRangeSelection {
  * Desktop's full usage. The backend collapses `claude-desktop → claude` in
  * every dashboard query (see `folded_app_type_sql`).
  */
-export type AppType =
-  | "claude"
-  | "codex"
-  | "kimi-code";
+export type AppType = "claude" | "codex" | "kimi-code";
 
 export type AppTypeFilter = "all" | AppType;
 

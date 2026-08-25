@@ -50,10 +50,7 @@ export interface ProviderPreset {
   // - "anthropic" (默认): Anthropic Messages API 格式，直接透传
   // - "openai_chat": OpenAI Chat Completions 格式，需要格式转换
   // - "openai_responses": OpenAI Responses API 格式，需要格式转换
-  apiFormat?:
-    | "anthropic"
-    | "openai_chat"
-    | "openai_responses";
+  apiFormat?: "anthropic" | "openai_chat" | "openai_responses";
 
   // 供应商类型标识（用于特殊供应商检测）
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
