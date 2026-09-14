@@ -58,7 +58,7 @@ interface ToolVersion {
   wsl_distro: string | null;
 }
 
-const TOOL_NAMES = ["claude", "codex"] as const;
+const TOOL_NAMES = ["kimi-code", "codex", "claude"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install" | "update";
 
@@ -100,23 +100,28 @@ const ENV_BADGE_CONFIG: Record<
 const posixScriptInstallCommand = (url: string) =>
   `bash -c 'tmp=$(mktemp) && curl -fsSL ${url} -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'`;
 
-const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest
+const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Kimi Code
+${posixScriptInstallCommand("https://code.kimi.com/kimi-code/install.sh")} || npm i -g @moonshot-ai/kimi-code@latest
 # Codex
-npm i -g @openai/codex@latest`;
+npm i -g @openai/codex@latest
+# Claude Code
+${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest`;
 
-const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
-npm i -g @anthropic-ai/claude-code@latest
+const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Kimi Code
+npm i -g @moonshot-ai/kimi-code@latest
 # Codex
-npm i -g @openai/codex@latest`;
+npm i -g @openai/codex@latest
+# Claude Code
+npm i -g @anthropic-ai/claude-code@latest`;
 
 const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS
   : POSIX_ONE_CLICK_INSTALL_COMMANDS;
 
 const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
-  claude: "Claude Code",
+  "kimi-code": "Kimi Code",
   codex: "Codex",
+  claude: "Claude Code",
 };
 
 // 后端返回的 tool 是 string；这里收敛唯一的 ToolName 断言与兜底，供升级确认
@@ -126,8 +131,9 @@ function toolDisplayName(tool: string): string {
 }
 
 const TOOL_APP_IDS: Record<ToolName, AppId> = {
-  claude: "claude",
+  "kimi-code": "kimi-code",
   codex: "codex",
+  claude: "claude",
 };
 
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
@@ -275,8 +281,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const loadAllToolVersions = useCallback(
     async (options?: { force?: boolean }) => {
       const force = options?.force ?? false;
-      // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过 6 个 `--version`
-      // 子进程 + 6 个 latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
+      // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过每个工具的
+      // `--version` 子进程 + latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
       if (
         !force &&
         toolVersionsCache &&
@@ -290,7 +296,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       try {
         // 逐工具并发探测：每个工具一完成就合并进 toolVersions（并写模块缓存）、清掉自己
         // 的 loadingTools 标志，对应卡片随即独立刷新——而非等全部探测完才一次性显示（后端
-        // 原本对 6 个工具串行 await，总耗时累加；并发后压成「最慢的那一个」）。refreshTool-
+        // 原本对各工具串行 await，总耗时累加；并发后压成「最慢的那一个」）。refreshTool-
         // Versions 已内建按 name 合并 + per-tool loading + try/catch 兜底（单工具失败返回 []
         // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
         await Promise.all(
@@ -479,7 +485,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     }
   }, []);
 
-  // 顶部按钮：一次性诊断全部 6 个工具，有冲突的写入各自卡片，
+  // 顶部按钮：一次性诊断全部工具，有冲突的写入各自卡片，
   // 全部无冲突时给一条 info toast。后端逐工具枚举所有安装并判定分歧。
   const handleDiagnoseAll = useCallback(async () => {
     setIsDiagnosingAll(true);
@@ -940,7 +946,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </div>
         </div>
 
-        <div className="grid gap-3 px-1 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="flex gap-3 overflow-x-auto px-1 py-1">
           {TOOL_NAMES.map((toolName, index) => {
             const tool = toolVersionByName.get(toolName);
             const appConfig = APP_ICON_MAP[TOOL_APP_IDS[toolName]];
@@ -979,7 +985,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.15 + index * 0.04 }}
-                className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
+                className="flex min-h-[150px] min-w-[280px] flex-1 flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">

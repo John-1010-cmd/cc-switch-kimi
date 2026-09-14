@@ -80,8 +80,17 @@ pub struct DailyStats {
 pub struct ProviderStats {
     pub provider_id: String,
     pub provider_name: String,
+    /// 折叠后的 app_type（claude-desktop → claude），前端据此判断缓存创建列的 N/A 展示。
+    pub app_type: String,
     pub request_count: u64,
+    /// fresh input + output（不含缓存），保持原语义。
     pub total_tokens: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    /// cache_read / (input + cache_creation + cache_read)，0–1 分数；分母为 0 时为 0.0。
+    pub cache_hit_rate: f64,
     pub total_cost: String,
     pub success_rate: f32,
     pub avg_latency_ms: u64,
@@ -93,7 +102,16 @@ pub struct ProviderStats {
 pub struct ModelStats {
     pub model: String,
     pub request_count: u64,
+    /// fresh input + output（不含缓存），保持原语义。
     pub total_tokens: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    /// cache_read / (input + cache_creation + cache_read)，0–1 分数；分母为 0 时为 0.0。
+    pub cache_hit_rate: f64,
+    /// 该模型行贡献者的去重 folded app_type 列表（逗号分隔；一个模型可能跨 app）。
+    pub app_types: String,
     pub total_cost: String,
     pub avg_cost_per_request: String,
 }
@@ -137,8 +155,8 @@ pub struct RequestLogDetail {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
-    /// Internal storage semantics; omitted from the UI/API payload.
-    #[serde(skip)]
+    /// 存储侧 input_tokens 语义（0=LEGACY / 1=TOTAL / 2=FRESH），前端据此
+    /// 判断 input_tokens 是否已含缓存，序列化为 inputTokenSemantics。
     pub input_token_semantics: i64,
     pub input_cost_usd: String,
     pub output_cost_usd: String,
@@ -1286,21 +1304,32 @@ impl Database {
         let rollup_pname = provider_name_coalesce("r", "p2");
         let fresh_input_detail = fresh_input_sql("l");
         let fresh_input_rollup = fresh_input_sql("r");
+        // 折叠 claude-desktop → claude：内层投影成同一桶名，外层 GROUP BY 自然合并。
+        let detail_app_type = folded_app_type_sql("l.app_type");
+        let rollup_app_type = folded_app_type_sql("r.app_type");
         let sql = format!(
             "SELECT
                 provider_id, app_type, provider_name,
                 SUM(request_count) as request_count,
                 SUM(total_tokens) as total_tokens,
+                SUM(input_tokens) as total_input_tokens,
+                SUM(output_tokens) as total_output_tokens,
+                SUM(cache_creation_tokens) as total_cache_creation_tokens,
+                SUM(cache_read_tokens) as total_cache_read_tokens,
                 SUM(total_cost) as total_cost,
                 SUM(success_count) as success_count,
                 CASE WHEN SUM(request_count) > 0
                     THEN SUM(latency_sum) / SUM(request_count)
                     ELSE 0 END as avg_latency
             FROM (
-                SELECT l.provider_id, l.app_type,
+                SELECT l.provider_id, {detail_app_type} as app_type,
                     {detail_pname} as provider_name,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as input_tokens,
+                    COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_tokens,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(l.latency_ms), 0) as latency_sum
@@ -1309,10 +1338,14 @@ impl Database {
                 {detail_where}
                 GROUP BY l.provider_id, l.app_type
                 UNION ALL
-                SELECT r.provider_id, r.app_type,
+                SELECT r.provider_id, {rollup_app_type} as app_type,
                     {rollup_pname} as provider_name,
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup}), 0),
+                    COALESCE(SUM(r.output_tokens), 0),
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.cache_read_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
                     COALESCE(SUM(r.success_count), 0),
                     COALESCE(SUM(r.avg_latency_ms * r.request_count), 0)
@@ -1331,21 +1364,38 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let row_mapper = |row: &rusqlite::Row| {
             let request_count: i64 = row.get(3)?;
-            let success_count: i64 = row.get(6)?;
+            let total_input_tokens: i64 = row.get(5)?;
+            let total_output_tokens: i64 = row.get(6)?;
+            let total_cache_creation_tokens: i64 = row.get(7)?;
+            let total_cache_read_tokens: i64 = row.get(8)?;
+            let success_count: i64 = row.get(10)?;
             let success_rate = if request_count > 0 {
                 (success_count as f32 / request_count as f32) * 100.0
             } else {
                 0.0
             };
+            // cache_hit_rate 由四个聚合值推导（分母 0 → 0.0），不写进 SQL。
+            let (_, cache_hit_rate) = derive_real_total_and_hit_rate(
+                total_input_tokens as u64,
+                total_output_tokens as u64,
+                total_cache_creation_tokens as u64,
+                total_cache_read_tokens as u64,
+            );
 
             Ok(ProviderStats {
                 provider_id: row.get(0)?,
                 provider_name: row.get(2)?,
+                app_type: row.get(1)?,
                 request_count: request_count as u64,
                 total_tokens: row.get::<_, i64>(4)? as u64,
-                total_cost: format!("{:.6}", row.get::<_, f64>(5)?),
+                total_input_tokens: total_input_tokens as u64,
+                total_output_tokens: total_output_tokens as u64,
+                total_cache_creation_tokens: total_cache_creation_tokens as u64,
+                total_cache_read_tokens: total_cache_read_tokens as u64,
+                cache_hit_rate,
+                total_cost: format!("{:.6}", row.get::<_, f64>(9)?),
                 success_rate,
-                avg_latency_ms: row.get::<_, f64>(7)? as u64,
+                avg_latency_ms: row.get::<_, f64>(11)? as u64,
             })
         };
 
@@ -1445,30 +1495,49 @@ impl Database {
         let fresh_input_rollup = fresh_input_sql("r");
         let detail_model = effective_model_sql("l");
         let rollup_model = effective_model_sql("r");
+        // 折叠 claude-desktop → claude；内层按 (model, folded app_type) 分组，
+        // 外层 GROUP_CONCAT(DISTINCT app_type) 收集该模型的全部贡献 app（跨分支去重）。
+        let detail_app_type = folded_app_type_sql("l.app_type");
+        let rollup_app_type = folded_app_type_sql("r.app_type");
         let sql = format!(
             "SELECT
                 model,
                 SUM(request_count) as request_count,
                 SUM(total_tokens) as total_tokens,
-                SUM(total_cost) as total_cost
+                SUM(input_tokens) as total_input_tokens,
+                SUM(output_tokens) as total_output_tokens,
+                SUM(cache_creation_tokens) as total_cache_creation_tokens,
+                SUM(cache_read_tokens) as total_cache_read_tokens,
+                SUM(total_cost) as total_cost,
+                GROUP_CONCAT(DISTINCT app_type) as app_types
             FROM (
                 SELECT {detail_model} as model,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as input_tokens,
+                    COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_tokens,
+                    {detail_app_type} as app_type,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
                 FROM proxy_request_logs l
                 {detail_join}
                 {detail_where}
-                GROUP BY {detail_model}
+                GROUP BY {detail_model}, {detail_app_type}
                 UNION ALL
                 SELECT {rollup_model},
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup}), 0),
+                    COALESCE(SUM(r.output_tokens), 0),
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.cache_read_tokens), 0),
+                    {rollup_app_type},
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0)
                 FROM usage_daily_rollups r
                 {rollup_join}
                 {rollup_where}
-                GROUP BY {rollup_model}
+                GROUP BY {rollup_model}, {rollup_app_type}
             )
             GROUP BY model
             ORDER BY total_cost DESC"
@@ -1480,17 +1549,34 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let row_mapper = |row: &rusqlite::Row| {
             let request_count: i64 = row.get(1)?;
-            let total_cost: f64 = row.get(3)?;
+            let total_input_tokens: i64 = row.get(3)?;
+            let total_output_tokens: i64 = row.get(4)?;
+            let total_cache_creation_tokens: i64 = row.get(5)?;
+            let total_cache_read_tokens: i64 = row.get(6)?;
+            let total_cost: f64 = row.get(7)?;
             let avg_cost = if request_count > 0 {
                 total_cost / request_count as f64
             } else {
                 0.0
             };
+            // cache_hit_rate 由四个聚合值推导（分母 0 → 0.0），不写进 SQL。
+            let (_, cache_hit_rate) = derive_real_total_and_hit_rate(
+                total_input_tokens as u64,
+                total_output_tokens as u64,
+                total_cache_creation_tokens as u64,
+                total_cache_read_tokens as u64,
+            );
 
             Ok(ModelStats {
                 model: row.get(0)?,
                 request_count: request_count as u64,
                 total_tokens: row.get::<_, i64>(2)? as u64,
+                total_input_tokens: total_input_tokens as u64,
+                total_output_tokens: total_output_tokens as u64,
+                total_cache_creation_tokens: total_cache_creation_tokens as u64,
+                total_cache_read_tokens: total_cache_read_tokens as u64,
+                cache_hit_rate,
+                app_types: row.get(8)?,
                 total_cost: format!("{total_cost:.6}"),
                 avg_cost_per_request: format!("{avg_cost:.6}"),
             })
@@ -3722,6 +3808,286 @@ mod tests {
     }
 
     #[test]
+    fn test_get_provider_stats_returns_token_breakdown_and_folded_app_type() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            // claude 明细行：不在 cache-inclusive 名单，fresh input = input 原样。
+            insert_usage_log(
+                &conn,
+                "claude-detail",
+                "claude",
+                "p-c",
+                "claude-sonnet-4-5",
+                "proxy",
+                10_000,
+                300,
+                50,
+                100,
+                20,
+                200,
+                "0.10",
+            )?;
+            // claude-desktop 行（同 provider_id）：折叠为 claude，合并进同一 provider 行。
+            insert_usage_log(
+                &conn,
+                "desktop-detail",
+                "claude-desktop",
+                "p-c",
+                "claude-sonnet-4-5",
+                "proxy",
+                10_100,
+                200,
+                30,
+                40,
+                10,
+                200,
+                "0.08",
+            )?;
+            // codex LEGACY 语义：fresh = input - cache_read = 1000 - 600 = 400。
+            insert_usage_log(
+                &conn,
+                "codex-legacy",
+                "codex",
+                "p-x",
+                "gpt-5.4",
+                "proxy",
+                20_000,
+                1000,
+                80,
+                600,
+                0,
+                200,
+                "0.20",
+            )?;
+            // codex TOTAL 语义：fresh = input - cache_read - cache_creation
+            // = 1000 - 300 - 200 = 500。
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    input_token_semantics, total_cost_usd, latency_ms, status_code,
+                    created_at, data_source
+                ) VALUES ('codex-total', 'p-x', 'codex', 'gpt-5.4', 'gpt-5.4',
+                    1000, 40, 300, 200, ?1, '0.15', 100, 200, 20100, 'proxy')",
+                params![INPUT_TOKEN_SEMANTICS_TOTAL],
+            )?;
+            // claude rollup 行（LEGACY 语义，claude 原样）：验证 rollup 分支聚合。
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model,
+                    request_count, success_count, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms
+                ) VALUES ('2024-01-01', 'claude', 'p-c', 'claude-sonnet-4-5',
+                    3, 3, 900, 150, 60, 30, '0.30', 120)",
+                [],
+            )?;
+        }
+
+        let stats = db.get_provider_stats(None, None, None, None, None)?;
+        assert_eq!(
+            stats.len(),
+            2,
+            "claude-desktop 行应折叠合并进同 provider 的 claude 行"
+        );
+
+        let claude = stats
+            .iter()
+            .find(|stat| stat.provider_id == "p-c")
+            .expect("p-c provider 行");
+        assert_eq!(claude.app_type, "claude");
+        assert_eq!(claude.request_count, 5);
+        // input = 300 + 200 + 900（rollup 原样）
+        assert_eq!(claude.total_input_tokens, 1400);
+        // output = 50 + 30 + 150
+        assert_eq!(claude.total_output_tokens, 230);
+        // cache_creation = 20 + 10 + 30
+        assert_eq!(claude.total_cache_creation_tokens, 60);
+        // cache_read = 100 + 40 + 60
+        assert_eq!(claude.total_cache_read_tokens, 200);
+        // total_tokens 保持原语义 = fresh input + output（不含缓存）
+        assert_eq!(claude.total_tokens, 1630);
+        // hit_rate = 200 / (1400 + 60 + 200)
+        let expected = 200.0_f64 / 1660.0_f64;
+        assert!((claude.cache_hit_rate - expected).abs() < 1e-9);
+
+        let codex = stats
+            .iter()
+            .find(|stat| stat.provider_id == "p-x")
+            .expect("p-x provider 行");
+        assert_eq!(codex.app_type, "codex");
+        // fresh input = (1000 - 600) + (1000 - 300 - 200) = 400 + 500
+        assert_eq!(codex.total_input_tokens, 900);
+        assert_eq!(codex.total_output_tokens, 120);
+        assert_eq!(codex.total_cache_creation_tokens, 200);
+        assert_eq!(codex.total_cache_read_tokens, 900);
+        // total_tokens = 900 + 120 = 1020，缓存已从 input 扣减（不是 2000 + 120）
+        assert_eq!(codex.total_tokens, 1020);
+        // hit_rate = 900 / (900 + 200 + 900) = 0.45
+        assert!((codex.cache_hit_rate - 0.45).abs() < 1e-9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stats_cache_hit_rate_zero_when_no_cacheable_input() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            // 只有 output：input/cache_creation/cache_read 全 0 → 分母为 0 → 0.0
+            insert_usage_log(
+                &conn,
+                "output-only",
+                "claude",
+                "p-out",
+                "claude-3",
+                "proxy",
+                30_000,
+                0,
+                25,
+                0,
+                0,
+                200,
+                "0.01",
+            )?;
+        }
+
+        let provider_stats = db.get_provider_stats(None, None, None, None, None)?;
+        assert_eq!(provider_stats.len(), 1);
+        assert_eq!(provider_stats[0].total_input_tokens, 0);
+        assert_eq!(provider_stats[0].total_output_tokens, 25);
+        assert_eq!(provider_stats[0].cache_hit_rate, 0.0);
+
+        let model_stats = db.get_model_stats(None, None, None, None, None)?;
+        assert_eq!(model_stats.len(), 1);
+        assert_eq!(model_stats[0].cache_hit_rate, 0.0);
+        assert_eq!(model_stats[0].app_types, "claude");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_model_stats_returns_token_breakdown_and_deduped_app_types() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            // 同一模型跨 codex 与 claude-desktop（折叠为 claude）两个 app。
+            insert_usage_log(
+                &conn, "m-codex-1", "codex", "p-x", "gpt-5.4", "proxy", 40_000, 1000, 80, 600, 0,
+                200, "0.20",
+            )?;
+            insert_usage_log(
+                &conn, "m-codex-2", "codex", "p-x", "gpt-5.4", "proxy", 40_100, 500, 20, 100, 0,
+                200, "0.05",
+            )?;
+            insert_usage_log(
+                &conn, "m-desktop-1", "claude-desktop", "p-c", "gpt-5.4", "proxy", 40_200, 300,
+                40, 50, 10, 200, "0.10",
+            )?;
+            // rollup 分支同模型 claude 贡献一行：与折叠后的 desktop 行去重。
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model,
+                    request_count, success_count, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms
+                ) VALUES ('2024-05-01', 'claude', 'p-c', 'gpt-5.4',
+                    2, 2, 700, 90, 110, 40, '0.21', 100)",
+                [],
+            )?;
+        }
+
+        let stats = db.get_model_stats(None, None, None, None, None)?;
+        assert_eq!(stats.len(), 1);
+        let row = &stats[0];
+        assert_eq!(row.model, "gpt-5.4");
+        assert_eq!(row.request_count, 5);
+        // fresh input: codex LEGACY (1000-600) + (500-100) = 800；claude 明细 300；rollup 700
+        assert_eq!(row.total_input_tokens, 1800);
+        // output = 80 + 20 + 40 + 90
+        assert_eq!(row.total_output_tokens, 230);
+        // cache_creation = 10 + 40
+        assert_eq!(row.total_cache_creation_tokens, 50);
+        // cache_read = 600 + 100 + 50 + 110
+        assert_eq!(row.total_cache_read_tokens, 860);
+        // total_tokens 保持原语义 = fresh input + output
+        assert_eq!(row.total_tokens, 2030);
+        // hit_rate = 860 / (1800 + 50 + 860)
+        let expected = 860.0_f64 / 2710.0_f64;
+        assert!((row.cache_hit_rate - expected).abs() < 1e-9);
+        // app_types 去重且折叠：codex 两行合并为一个 codex；claude-desktop → claude
+        // 并与 rollup 的 claude 去重。
+        let mut apps: Vec<&str> = row.app_types.split(',').collect();
+        apps.sort_unstable();
+        assert_eq!(apps, ["claude", "codex"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stats_and_log_serialize_new_fields_camel_case() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    input_token_semantics, total_cost_usd, latency_ms, status_code,
+                    created_at, data_source
+                ) VALUES ('sem-1', 'p-x', 'codex', 'gpt-5.4', 'gpt-5.4',
+                    1000, 40, 300, 200, ?1, '0.15', 100, 200, 50000, 'proxy')",
+                params![INPUT_TOKEN_SEMANTICS_TOTAL],
+            )?;
+        }
+
+        let logs = db.get_request_logs(&LogFilters::default(), 0, 10)?;
+        assert_eq!(logs.data.len(), 1);
+        let value = serde_json::to_value(&logs.data[0]).unwrap();
+        assert_eq!(
+            value.get("inputTokenSemantics"),
+            Some(&serde_json::json!(INPUT_TOKEN_SEMANTICS_TOTAL)),
+            "RequestLogDetail 应序列化 inputTokenSemantics"
+        );
+
+        let provider_stats = db.get_provider_stats(None, None, None, None, None)?;
+        let value = serde_json::to_value(&provider_stats[0]).unwrap();
+        for key in [
+            "totalInputTokens",
+            "totalOutputTokens",
+            "totalCacheCreationTokens",
+            "totalCacheReadTokens",
+            "cacheHitRate",
+            "appType",
+        ] {
+            assert!(
+                value.get(key).is_some(),
+                "ProviderStats 缺少序列化字段 {key}"
+            );
+        }
+
+        let model_stats = db.get_model_stats(None, None, None, None, None)?;
+        let value = serde_json::to_value(&model_stats[0]).unwrap();
+        for key in [
+            "totalInputTokens",
+            "totalOutputTokens",
+            "totalCacheCreationTokens",
+            "totalCacheReadTokens",
+            "cacheHitRate",
+            "appTypes",
+        ] {
+            assert!(value.get(key).is_some(), "ModelStats 缺少序列化字段 {key}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_get_provider_stats_with_time_filter() -> Result<(), AppError> {
         let db = Database::memory()?;
 
@@ -3832,6 +4198,13 @@ mod tests {
         assert_eq!(stats[0].provider_id, "p-rollup");
         assert_eq!(stats[0].request_count, 8);
         assert_eq!(stats[0].total_tokens, 1200);
+        // rollup 分支分项：input 800 + output 400，无缓存 → hit_rate 0.0
+        assert_eq!(stats[0].app_type, "claude");
+        assert_eq!(stats[0].total_input_tokens, 800);
+        assert_eq!(stats[0].total_output_tokens, 400);
+        assert_eq!(stats[0].total_cache_creation_tokens, 0);
+        assert_eq!(stats[0].total_cache_read_tokens, 0);
+        assert_eq!(stats[0].cache_hit_rate, 0.0);
 
         Ok(())
     }
@@ -4030,6 +4403,13 @@ mod tests {
         assert_eq!(stats[0].model, "claude-3-haiku");
         assert_eq!(stats[0].request_count, 9);
         assert_eq!(stats[0].total_tokens, 1350);
+        // rollup 分支分项：input 900 + output 450，无缓存 → hit_rate 0.0
+        assert_eq!(stats[0].total_input_tokens, 900);
+        assert_eq!(stats[0].total_output_tokens, 450);
+        assert_eq!(stats[0].total_cache_creation_tokens, 0);
+        assert_eq!(stats[0].total_cache_read_tokens, 0);
+        assert_eq!(stats[0].cache_hit_rate, 0.0);
+        assert_eq!(stats[0].app_types, "claude");
 
         Ok(())
     }

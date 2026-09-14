@@ -14,7 +14,6 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowUpFromLine,
-  Database,
   Gauge,
   Info,
   Loader2,
@@ -31,7 +30,6 @@ import {
   parseFiniteNumber,
 } from "./format";
 import {
-  CACHE_INCLUSIVE_APP_TYPES,
   type AppType,
   type UsageRangeSelection,
   type UsageSummary,
@@ -123,32 +121,6 @@ function pickSummary(
   return aggregateSummaries(apps.map((a) => a.summary));
 }
 
-type CacheWriteState = "ok" | "partial" | "na";
-
-/**
- * Anthropic-style protocols report cache creation; OpenAI-style protocols
- * (Codex) do not — so a mix shows the number with a caveat, all-OpenAI
- * shows N/A. kimi-code is the exception: it sits in CACHE_INCLUSIVE_APP_TYPES
- * but speaks the Anthropic protocol and reports real cache-creation tokens,
- * so its N/A state is data-driven (N/A only while no cache-creation data has
- * been recorded). `apps` is the set actually contributing to the displayed
- * summary (a single app, or every app that participated in "all").
- */
-export function deriveCacheWriteState(
-  apps: ReadonlyArray<{ appType: string; cacheCreationTokens: number }>,
-): CacheWriteState {
-  if (apps.length === 0) return "ok";
-  const naCount = apps.filter((a) => {
-    if (!CACHE_INCLUSIVE_APP_TYPES.has(a.appType)) return false;
-    // kimi-code 走 Anthropic 协议、cacheCreation 有真实值：有数据就不标 N/A
-    if (a.appType === "kimi-code") return a.cacheCreationTokens <= 0;
-    return true;
-  }).length;
-  if (naCount === apps.length) return "na";
-  if (naCount === 0) return "ok";
-  return "partial";
-}
-
 /**
  * Hero 标题图标：选中具体应用时显示该应用的品牌图标，"全部"时回退到通用闪电。
  * 复用 APP_ICON_MAP（与侧边栏 / 应用切换器同一套图标），用 cloneElement 放大到
@@ -205,46 +177,13 @@ export function UsageHero({
   const appLabel =
     appType && appType in TITLE_THEMES ? t(`usage.appFilter.${appType}`) : null;
 
-  const cacheWriteState = deriveCacheWriteState(
-    appType
-      ? [
-          {
-            appType,
-            cacheCreationTokens: summary?.totalCacheCreationTokens ?? 0,
-          },
-        ]
-      : allApps.map((a) => ({
-          appType: a.appType,
-          cacheCreationTokens: a.summary.totalCacheCreationTokens,
-        })),
-  );
-
   const input = summary?.totalInputTokens ?? 0;
   const output = summary?.totalOutputTokens ?? 0;
-  const cacheWrite = summary?.totalCacheCreationTokens ?? 0;
   const cacheRead = summary?.totalCacheReadTokens ?? 0;
   const realTotal = summary?.realTotalTokens ?? 0;
   const hitRate = summary?.cacheHitRate ?? 0;
   const totalCost = parseFiniteNumber(summary?.totalCost);
   const requests = summary?.totalRequests ?? 0;
-
-  const cacheWriteDisplay = {
-    value:
-      cacheWriteState === "na" ? "N/A" : formatTokensShort(cacheWrite, lang),
-    muted: cacheWriteState === "na",
-    tooltip:
-      cacheWriteState === "na"
-        ? t(
-            "usage.cacheWriteNotReported",
-            "OpenAI 协议不区分缓存写入，仅上报缓存命中",
-          )
-        : cacheWriteState === "partial"
-          ? t(
-              "usage.cacheWritePartial",
-              "部分协议（如 OpenAI）不上报缓存写入，数值可能偏低",
-            )
-          : undefined,
-  };
 
   if (isLoading) {
     return (
@@ -333,7 +272,7 @@ export function UsageHero({
             <div
               className={cn(
                 "grid grid-cols-2 gap-3",
-                showRealtime ? "lg:grid-cols-7" : "lg:grid-cols-5",
+                showRealtime ? "lg:grid-cols-6" : "lg:grid-cols-4",
               )}
             >
               <MiniStat
@@ -347,14 +286,6 @@ export function UsageHero({
                 label={t("usage.output")}
                 value={formatTokensShort(output, lang)}
                 accent="text-purple-500"
-              />
-              <MiniStat
-                icon={<Database className="h-3.5 w-3.5" />}
-                label={t("usage.cacheWrite", "缓存写入")}
-                value={cacheWriteDisplay.value}
-                accent="text-amber-500"
-                muted={cacheWriteDisplay.muted}
-                tooltip={cacheWriteDisplay.tooltip}
               />
               <MiniStat
                 icon={<Sparkles className="h-3.5 w-3.5" />}

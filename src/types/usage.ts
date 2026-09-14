@@ -21,6 +21,12 @@ export interface RequestLog {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /**
+   * input_tokens 的存储语义：0=legacy（缓存包含型 app 只含 cache_read）、
+   * 1=TOTAL（含 cache_read + cache_creation）、2=FRESH（已扣减缓存）。
+   * 与 Rust `INPUT_TOKEN_SEMANTICS_*` 对应，见 [getFreshInputTokens]。
+   */
+  inputTokenSemantics?: number;
   inputCostUsd: string;
   outputCostUsd: string;
   cacheReadCostUsd: string;
@@ -114,19 +120,37 @@ export interface DailyStats {
 export interface ProviderStats {
   providerId: string;
   providerName: string;
+  /** 折叠后的应用类型（claude-desktop → claude） */
+  appType: string;
   requestCount: number;
   totalTokens: number;
   totalCost: string;
   successRate: number;
   avgLatencyMs: number;
+  /** fresh-input 口径（缓存包含型 app 已扣减缓存部分） */
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
+  /** cache_read / (input + cache_creation + cache_read)，0–1 分数 */
+  cacheHitRate: number;
 }
 
 export interface ModelStats {
   model: string;
+  /** 该模型行贡献者的去重 folded app_type 列表（逗号分隔） */
+  appTypes: string;
   requestCount: number;
   totalTokens: number;
   totalCost: string;
   avgCostPerRequest: string;
+  /** fresh-input 口径（缓存包含型 app 已扣减缓存部分） */
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
+  /** cache_read / (input + cache_creation + cache_read)，0–1 分数 */
+  cacheHitRate: number;
 }
 
 export interface LogFilters {
@@ -206,9 +230,9 @@ export type AppType = "claude" | "codex" | "kimi-code";
 export type AppTypeFilter = "all" | AppType;
 
 export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
-  "claude",
-  "codex",
   "kimi-code",
+  "codex",
+  "claude",
 ];
 
 /**
@@ -218,11 +242,8 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
  *
  * For the OpenAI-style proxy apps (codex) there is a second
  * consequence: the protocol does not report cache _creation_ separately, only
- * cache _reads_, so `cacheCreationTokens` is always 0 and the UI labels it as
- * N/A rather than 0. That "always 0 → N/A" assumption applies ONLY to those
- * OpenAI-protocol proxy apps: `kimi-code` speaks the Anthropic protocol and
- * reports real cache-creation tokens, so its N/A state is data-driven (see
- * `deriveCacheWriteState` in UsageHero).
+ * cache _reads_, so `cacheCreationTokens` is always 0 for them; `kimi-code`
+ * speaks the Anthropic protocol and reports real cache-creation tokens.
  *
  * Mirror of the Rust `CACHE_INCLUSIVE_APP_TYPES` whitelist.
  */
@@ -236,21 +257,54 @@ export interface CacheNormalizableLog {
   appType: string;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens?: number;
+  inputTokenSemantics?: number;
 }
 
+/** 与 Rust `INPUT_TOKEN_SEMANTICS_*`（sql_helpers.rs）对应，改动须同步。 */
+export const INPUT_TOKEN_SEMANTICS = {
+  LEGACY: 0,
+  TOTAL: 1,
+  FRESH: 2,
+} as const;
+
 /**
- * For a single request log, return the input token count with cache reads
- * removed. Anthropic-style providers already report `inputTokens` without
- * cache, so they pass through unchanged.
+ * For a single request log, return the input token count with the cached
+ * portion removed. Mirrors the Rust `fresh_input_sql` semantics:
+ * FRESH rows are already normalized; TOTAL rows subtract cache reads *and*
+ * cache writes; legacy rows of cache-inclusive apps subtract cache reads
+ * only. Anthropic-style providers pass through unchanged.
  */
 export function getFreshInputTokens(log: CacheNormalizableLog): number {
-  if (
-    CACHE_INCLUSIVE_APP_TYPES.has(log.appType) &&
-    log.inputTokens >= log.cacheReadTokens
-  ) {
+  if (log.inputTokenSemantics === INPUT_TOKEN_SEMANTICS.FRESH) {
+    return log.inputTokens;
+  }
+  if (!CACHE_INCLUSIVE_APP_TYPES.has(log.appType)) {
+    return log.inputTokens;
+  }
+  if (log.inputTokenSemantics === INPUT_TOKEN_SEMANTICS.TOTAL) {
+    const cached = log.cacheReadTokens + (log.cacheCreationTokens ?? 0);
+    return log.inputTokens >= cached
+      ? log.inputTokens - cached
+      : log.inputTokens;
+  }
+  if (log.inputTokens >= log.cacheReadTokens) {
     return log.inputTokens - log.cacheReadTokens;
   }
   return log.inputTokens;
+}
+
+/**
+ * 单条请求日志的缓存命中率：cache_read / (fresh_input + cache_creation +
+ * cache_read)，与后端聚合口径一致。可缓存输入为 0 时返回 null（UI 显示
+ * "—"，不显示误导性的 0%）。
+ */
+export function getLogCacheHitRate(log: CacheNormalizableLog): number | null {
+  const cacheRead = log.cacheReadTokens;
+  const cacheCreation = log.cacheCreationTokens ?? 0;
+  const cacheable = getFreshInputTokens(log) + cacheCreation + cacheRead;
+  if (cacheable <= 0) return null;
+  return cacheRead / cacheable;
 }
 
 export const NON_NEGATIVE_DECIMAL_REGEX = /^\d+(?:\.\d+)?$/;

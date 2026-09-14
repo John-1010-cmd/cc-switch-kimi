@@ -79,7 +79,6 @@ export function UsageTrendChart({
         hour: pointDate.getHours(),
         inputTokens: stat.totalInputTokens,
         outputTokens: stat.totalOutputTokens,
-        cacheCreationTokens: stat.totalCacheCreationTokens,
         cacheReadTokens: stat.totalCacheReadTokens,
         cost: cost ?? null,
       };
@@ -140,16 +139,6 @@ export function UsageTrendChart({
                 <stop offset="5%" stopColor="#22c55e" stopOpacity={0.2} />
                 <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
               </linearGradient>
-              <linearGradient
-                id="colorCacheCreation"
-                x1="0"
-                y1="0"
-                x2="0"
-                y2="1"
-              >
-                <stop offset="5%" stopColor="#f97316" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
-              </linearGradient>
               <linearGradient id="colorCacheRead" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#a855f7" stopOpacity={0.2} />
                 <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
@@ -203,16 +192,6 @@ export function UsageTrendChart({
               stroke="#22c55e"
               fillOpacity={1}
               fill="url(#colorOutput)"
-              strokeWidth={2}
-            />
-            <Area
-              yAxisId="tokens"
-              type="monotone"
-              dataKey="cacheCreationTokens"
-              name={t("usage.cacheCreationTokens", "缓存创建")}
-              stroke="#f97316"
-              fillOpacity={1}
-              fill="url(#colorCacheCreation)"
               strokeWidth={2}
             />
             <Area

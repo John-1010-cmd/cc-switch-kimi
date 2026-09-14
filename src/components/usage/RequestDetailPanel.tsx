@@ -24,9 +24,7 @@ export function RequestDetailPanel({
       ? "zh-CN"
       : i18n.language === "zh-TW"
         ? "zh-TW"
-        : i18n.language === "ja"
-          ? "ja-JP"
-          : "en-US";
+        : "en-US";
 
   if (isLoading) {
     return (
@@ -187,14 +185,6 @@ export function RequestDetailPanel({
                 </dt>
                 <dd className="font-mono">
                   {request.cacheReadTokens.toLocaleString()}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">
-                  {t("usage.cacheCreationTokens", "缓存写入")}
-                </dt>
-                <dd className="font-mono">
-                  {request.cacheCreationTokens.toLocaleString()}
                 </dd>
               </div>
               <div className="col-span-2">

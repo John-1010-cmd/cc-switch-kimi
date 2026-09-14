@@ -60,7 +60,7 @@ const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
 const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = ["claude", "codex"];
+const VALID_APPS: AppId[] = ["kimi-code", "codex", "claude"];
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -107,10 +107,10 @@ function App() {
   };
 
   const getFirstVisibleApp = (): AppId => {
-    if (visibleApps.claude) return "claude";
-    if (visibleApps.codex) return "codex";
     if (visibleApps["kimi-code"]) return "kimi-code";
-    return "claude"; // fallback
+    if (visibleApps.codex) return "codex";
+    if (visibleApps.claude) return "claude";
+    return "kimi-code"; // fallback
   };
 
   useEffect(() => {
@@ -689,22 +689,20 @@ function App() {
                     setCurrentView("settings");
                   }}
                 />
-                {isCurrentAppTakeoverActive && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => {
-                      setSettingsDefaultTab("usage");
-                      setCurrentView("settings");
-                    }}
-                    title={t("usage.title", {
-                      defaultValue: "使用统计",
-                    })}
-                    className="hover:bg-black/5 dark:hover:bg-white/5"
-                  >
-                    <BarChart2 className="w-4 h-4" />
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    setSettingsDefaultTab("usage");
+                    setCurrentView("settings");
+                  }}
+                  title={t("usage.title", {
+                    defaultValue: "使用统计",
+                  })}
+                  className="hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  <BarChart2 className="w-4 h-4" />
+                </Button>
               </div>
             )}
           </div>

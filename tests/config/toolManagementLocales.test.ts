@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import en from "@/i18n/locales/en.json";
-import ja from "@/i18n/locales/ja.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
 import zh from "@/i18n/locales/zh.json";
 
@@ -41,7 +40,6 @@ type SettingsTranslations = Record<string, unknown>;
 
 const locales = [
   ["en", en.settings],
-  ["ja", ja.settings],
   ["zh", zh.settings],
   ["zh-TW", zhTW.settings],
 ] as const;

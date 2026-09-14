@@ -54,7 +54,7 @@ pub struct TrayTexts {
 /// 镜像前端 `i18n/getInitialLanguage` 的判定顺序，确保首次安装
 /// （`settings.language` 尚未写入）时托盘语言与界面语言一致：
 /// 繁中系统（zh-TW/HK/MO/Hant）→ `zh-TW`，其余 zh → `zh`，
-/// 日文 → `ja`，英文 → `en`，未知区域回退到 `zh`（与前端默认一致）。
+/// 英文 → `en`，未知区域回退到 `zh`（与前端默认一致）。
 fn map_locale_to_tray_language(locale: &str) -> &'static str {
     let locale = locale.to_lowercase();
     if locale == "zh" {
@@ -67,8 +67,6 @@ fn map_locale_to_tray_language(locale: &str) -> &'static str {
         "zh-TW"
     } else if locale.starts_with("zh") {
         "zh"
-    } else if locale.starts_with("ja") {
-        "ja"
     } else if locale.starts_with("en") {
         "en"
     } else {
@@ -94,14 +92,6 @@ impl TrayTexts {
                 lightweight_mode: "Lightweight Mode",
                 quit: "Quit",
                 _auto_label: "Auto (Failover)",
-            },
-            "ja" => Self {
-                show_main: "メインウィンドウを開く",
-                open_website: "プロジェクトページを開く",
-                no_providers_label: "(プロバイダーなし)",
-                lightweight_mode: "軽量モード",
-                quit: "終了",
-                _auto_label: "自動 (フェイルオーバー)",
             },
             "zh-TW" => Self {
                 show_main: "開啟主介面",
@@ -138,11 +128,11 @@ pub const TRAY_ID: &str = "cc-switch";
 
 pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
     TrayAppSection {
-        app_type: AppType::Claude,
-        prefix: "claude_",
-        empty_id: "claude_empty",
-        header_label: "Claude",
-        log_name: "Claude",
+        app_type: AppType::KimiCode,
+        prefix: "kimi_code_",
+        empty_id: "kimi_code_empty",
+        header_label: "Kimi Code",
+        log_name: "Kimi Code",
     },
     TrayAppSection {
         app_type: AppType::Codex,
@@ -152,11 +142,11 @@ pub const TRAY_SECTIONS: [TrayAppSection; 3] = [
         log_name: "Codex",
     },
     TrayAppSection {
-        app_type: AppType::KimiCode,
-        prefix: "kimi_code_",
-        empty_id: "kimi_code_empty",
-        header_label: "Kimi Code",
-        log_name: "Kimi Code",
+        app_type: AppType::Claude,
+        prefix: "claude_",
+        empty_id: "claude_empty",
+        header_label: "Claude",
+        log_name: "Claude",
     },
 ];
 
@@ -1151,10 +1141,10 @@ mod tests {
     }
 
     #[test]
-    fn locale_maps_japanese_and_english() {
+    fn locale_maps_unsupported_japanese_to_zh_and_english() {
         use super::map_locale_to_tray_language;
-        assert_eq!(map_locale_to_tray_language("ja-JP"), "ja");
-        assert_eq!(map_locale_to_tray_language("ja"), "ja");
+        assert_eq!(map_locale_to_tray_language("ja-JP"), "zh");
+        assert_eq!(map_locale_to_tray_language("ja"), "zh");
         assert_eq!(map_locale_to_tray_language("en-US"), "en");
         assert_eq!(map_locale_to_tray_language("en"), "en");
     }

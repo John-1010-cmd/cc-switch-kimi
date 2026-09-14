@@ -20,6 +20,7 @@ import {
 import { useRequestLogs } from "@/lib/query/usage";
 import {
   getFreshInputTokens,
+  getLogCacheHitRate,
   isUnpricedUsage,
   type LogFilters,
   type UsageRangeSelection,
@@ -170,6 +171,12 @@ export function RequestLogTable({
                     {t("usage.outputTokens")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
+                    {t("usage.cacheReadTokens", "缓存读取")}
+                  </TableHead>
+                  <TableHead className="text-center whitespace-nowrap">
+                    {t("usage.cacheHitRate", "缓存命中率")}
+                  </TableHead>
+                  <TableHead className="text-center whitespace-nowrap">
                     {t("usage.totalCost")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
@@ -178,16 +185,13 @@ export function RequestLogTable({
                   <TableHead className="text-center whitespace-nowrap">
                     {t("usage.status")}
                   </TableHead>
-                  <TableHead className="text-center whitespace-nowrap">
-                    {t("usage.source", { defaultValue: "Source" })}
-                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="text-center text-muted-foreground"
                     >
                       {t("usage.noData")}
@@ -253,22 +257,24 @@ export function RequestLogTable({
                               </div>
                             );
                           })()}
-                          {(log.cacheReadTokens > 0 ||
-                            log.cacheCreationTokens > 0) && (
-                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                              {[
-                                log.cacheReadTokens > 0 &&
-                                  `R${fmtInt(log.cacheReadTokens, locale)}`,
-                                log.cacheCreationTokens > 0 &&
-                                  `W${fmtInt(log.cacheCreationTokens, locale)}`,
-                              ]
-                                .filter(Boolean)
-                                .join("·")}
-                            </div>
-                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           {fmtInt(log.outputTokens, locale)}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {fmtInt(log.cacheReadTokens, locale)}
+                        </TableCell>
+                        <TableCell className="text-center tabular-nums">
+                          {(() => {
+                            const rate = getLogCacheHitRate(log);
+                            return rate == null ? (
+                              <span className="text-muted-foreground/70">
+                                —
+                              </span>
+                            ) : (
+                              `${(rate * 100).toFixed(1)}%`
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-center px-1.5">
                           <div
@@ -291,11 +297,25 @@ export function RequestLogTable({
                             )}
                         </TableCell>
                         <TableCell className="text-center whitespace-nowrap text-xs tabular-nums">
-                          {(log.latencyMs / 1000).toFixed(1)}s
-                          {log.firstTokenMs != null && (
-                            <span className="text-muted-foreground">
-                              /{(log.firstTokenMs / 1000).toFixed(1)}s
+                          {log.latencyMs === 0 && log.firstTokenMs == null ? (
+                            <span
+                              className="text-muted-foreground/70"
+                              title={t(
+                                "usage.timingNotRecorded",
+                                "会话导入日志无计时数据",
+                              )}
+                            >
+                              —
                             </span>
+                          ) : (
+                            <>
+                              {(log.latencyMs / 1000).toFixed(1)}s
+                              {log.firstTokenMs != null && (
+                                <span className="text-muted-foreground">
+                                  /{(log.firstTokenMs / 1000).toFixed(1)}s
+                                </span>
+                              )}
+                            </>
                           )}
                         </TableCell>
                         <TableCell className="text-center">
@@ -308,9 +328,6 @@ export function RequestLogTable({
                           >
                             {log.statusCode}
                           </span>
-                        </TableCell>
-                        <TableCell className="text-center text-xs text-muted-foreground">
-                          {log.dataSource || "proxy"}
                         </TableCell>
                       </TableRow>
                     );

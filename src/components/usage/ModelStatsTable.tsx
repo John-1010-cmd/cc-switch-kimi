@@ -19,6 +19,8 @@ interface ModelStatsTableProps {
   refreshIntervalMs: number;
 }
 
+const COLUMN_COUNT = 8;
+
 export function ModelStatsTable({
   range,
   appType,
@@ -49,7 +51,16 @@ export function ModelStatsTable({
               {t("usage.requests", "请求数")}
             </TableHead>
             <TableHead className="text-right">
-              {t("usage.tokens", "Tokens")}
+              {t("usage.inputTokens", "输入")}
+            </TableHead>
+            <TableHead className="text-right">
+              {t("usage.outputTokens", "输出")}
+            </TableHead>
+            <TableHead className="text-right">
+              {t("usage.cacheReadTokens", "缓存读取")}
+            </TableHead>
+            <TableHead className="text-right">
+              {t("usage.cacheHitRate", "缓存命中率")}
             </TableHead>
             <TableHead className="text-right">
               {t("usage.totalCost", "总成本")}
@@ -63,7 +74,7 @@ export function ModelStatsTable({
           {stats?.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={5}
+                colSpan={COLUMN_COUNT}
                 className="text-center text-muted-foreground"
               >
                 {t("usage.noData", "暂无数据")}
@@ -79,8 +90,22 @@ export function ModelStatsTable({
                   {stat.requestCount.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                  {stat.totalInputTokens.toLocaleString()}
                 </TableCell>
+                <TableCell className="text-right">
+                  {stat.totalOutputTokens.toLocaleString()}
+                </TableCell>
+                <TableCell className="text-right">
+                  {stat.totalCacheReadTokens.toLocaleString()}
+                </TableCell>
+                <CacheHitRateCell
+                  rate={stat.cacheHitRate}
+                  cacheable={
+                    stat.totalInputTokens +
+                    stat.totalCacheCreationTokens +
+                    stat.totalCacheReadTokens
+                  }
+                />
                 <TableCell className="text-right">
                   {fmtUsd(stat.totalCost, 4)}
                 </TableCell>
@@ -93,5 +118,23 @@ export function ModelStatsTable({
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/** 缓存命中率列：无可缓存输入时显示 "—"（0% 具有误导性） */
+function CacheHitRateCell({
+  rate,
+  cacheable,
+}: {
+  rate: number;
+  cacheable: number;
+}) {
+  if (cacheable <= 0) {
+    return (
+      <TableCell className="text-right text-muted-foreground/70">—</TableCell>
+    );
+  }
+  return (
+    <TableCell className="text-right">{(rate * 100).toFixed(1)}%</TableCell>
   );
 }

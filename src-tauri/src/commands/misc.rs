@@ -104,7 +104,14 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 2] = ["claude", "codex"];
+const VALID_TOOLS: [&str; 3] = ["kimi-code", "codex", "claude"];
+
+fn cli_command_for(tool: &str) -> &str {
+    match tool {
+        "kimi-code" => "kimi",
+        _ => tool,
+    }
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,6 +424,7 @@ fn build_tool_lifecycle_command(
 
 fn tool_display_name(tool: &str) -> &'static str {
     match tool {
+        "kimi-code" => "Kimi Code",
         "claude" => "Claude Code",
         "codex" => "Codex",
         _ => "Unknown",
@@ -430,6 +438,8 @@ fn tool_display_name(tool: &str) -> &'static str {
 /// 先下载到 mktemp 文件再交给 bash,能让 curl 失败稳定变成整条命令失败。
 const CLAUDE_INSTALL_UNIX: &str =
     "bash -c 'tmp=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
+const KIMI_CODE_INSTALL_UNIX: &str =
+    "bash -c 'tmp=$(mktemp) && curl -fsSL https://code.kimi.com/kimi-code/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
 
 #[derive(Debug, Clone, Copy)]
 enum LifecycleCommandShell {
@@ -440,6 +450,7 @@ enum LifecycleCommandShell {
 
 fn npm_install_command_for(tool: &str) -> Option<&'static str> {
     match tool {
+        "kimi-code" => Some("npm i -g @moonshot-ai/kimi-code@latest"),
         "claude" => Some("npm i -g @anthropic-ai/claude-code@latest"),
         "codex" => Some("npm i -g @openai/codex@latest"),
         _ => None,
@@ -682,6 +693,9 @@ async fn get_single_tool_version_impl(
     //    fetch_npm_latest_for_tool / npm_prerelease_tags）
     let local = local_version.as_deref();
     let latest_version = match tool {
+        "kimi-code" => {
+            fetch_npm_latest_for_tool(&client, "@moonshot-ai/kimi-code", tool, local).await
+        }
         "claude" => {
             fetch_npm_latest_for_tool(&client, "@anthropic-ai/claude-code", tool, local).await
         }
@@ -860,9 +874,9 @@ enum ShellProbe {
     NotFound(String),
 }
 
-/// 在非 Windows 平台用用户 shell 执行 `{tool} --version` 探测版本。
+/// 在非 Windows 平台用用户 shell 执行 `cli_command_for(tool) --version` 探测版本。
 ///
-/// Windows 不走此路径：`cmd /C {tool}` 可能误触发 App Execution Alias /
+/// Windows 不走此路径：通过 `cmd /C` 直接执行工具名可能误触发 App Execution Alias /
 /// 协议处理器（曾导致 Windows 版整体被禁用），那里改由 `scan_cli_version`
 /// 只执行已定位到的真实可执行文件。
 #[cfg(not(target_os = "windows"))]
@@ -875,9 +889,10 @@ fn try_get_version(tool: &str) -> ShellProbe {
             .filter(|s| is_valid_shell(s))
             .unwrap_or_else(|| "sh".to_string());
         let flag = default_flag_for_shell(&shell);
+        let command = cli_command_for(tool);
         Command::new(shell)
             .arg(flag)
-            .arg(format!("{tool} --version"))
+            .arg(format!("{command} --version"))
             .output()
     };
 
@@ -1073,6 +1088,7 @@ fn try_get_version_wsl(
     }
 
     // 构建 Shell 脚本检测逻辑
+    let command = cli_command_for(tool);
     let (shell, flag, cmd) = if let Some(shell) = force_shell {
         // Defensive validation: never allow an arbitrary executable name here.
         if !is_valid_shell(shell) {
@@ -1088,17 +1104,17 @@ fn try_get_version_wsl(
             default_flag_for_shell(shell)
         };
 
-        (shell.to_string(), flag, format!("{tool} --version"))
+        (shell.to_string(), flag, format!("{command} --version"))
     } else {
         let cmd = if let Some(flag) = force_shell_flag {
             if !is_valid_shell_flag(flag) {
                 return ShellProbe::NotFound(format!("[WSL:{distro}] invalid shell flag: {flag}"));
             }
-            format!("\"${{SHELL:-sh}}\" {flag} '{tool} --version'")
+            format!("\"${{SHELL:-sh}}\" {flag} '{command} --version'")
         } else {
             // 兜底：自动尝试 -lic, -lc, -c
             format!(
-                "\"${{SHELL:-sh}}\" -lic '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{tool} --version'"
+                "\"${{SHELL:-sh}}\" -lic '{command} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{command} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{command} --version'"
             )
         };
 
@@ -1275,12 +1291,14 @@ fn extend_windows_cli_manager_search_paths(paths: &mut Vec<std::path::PathBuf>, 
 }
 
 fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf> {
+    let command = cli_command_for(tool);
+
     #[cfg(target_os = "windows")]
     {
-        let extensionless = dir.join(tool);
+        let extensionless = dir.join(command);
         let mut candidates = vec![
-            dir.join(format!("{tool}.cmd")),
-            dir.join(format!("{tool}.exe")),
+            dir.join(format!("{command}.cmd")),
+            dir.join(format!("{command}.exe")),
         ];
         if windows_runnable_sibling_for_extensionless_tool(&extensionless).is_none() {
             candidates.push(extensionless);
@@ -1290,7 +1308,7 @@ fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf>
 
     #[cfg(not(target_os = "windows"))]
     {
-        vec![dir.join(tool)]
+        vec![dir.join(command)]
     }
 }
 
@@ -1388,7 +1406,8 @@ fn build_tool_search_paths(_tool: &str) -> Vec<std::path::PathBuf> {
         }
     }
 
-    let path_env = std::env::var_os("PATH");    extend_from_cli_path_env(&mut search_paths, path_env);
+    let path_env = std::env::var_os("PATH");
+    extend_from_cli_path_env(&mut search_paths, path_env);
     search_paths
 }
 
@@ -1649,9 +1668,10 @@ fn resolve_path_default(tool: &str) -> Option<std::path::PathBuf> {
         .filter(|s| is_valid_shell(s))
         .unwrap_or_else(|| "sh".to_string());
     let flag = default_flag_for_shell(&shell);
+    let command = cli_command_for(tool);
     let out = Command::new(shell)
         .arg(flag)
-        .arg(format!("command -v {tool}"))
+        .arg(format!("command -v {command}"))
         .output()
         .ok()?;
     if !out.status.success() {
@@ -1668,8 +1688,9 @@ fn resolve_path_default(tool: &str) -> Option<std::path::PathBuf> {
 fn resolve_path_default(tool: &str) -> Option<std::path::PathBuf> {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
+    let command = cli_command_for(tool);
     let out = Command::new("cmd")
-        .args(["/C", &format!("where {tool}")])
+        .args(["/C", &format!("where {command}")])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
@@ -1777,6 +1798,7 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
 /// 全平台共用一张表——Windows 锚定层(`anchored_command_from_paths` 的 windows 版)也读这里。
 fn npm_package_for(tool: &str) -> Option<&'static str> {
     match tool {
+        "kimi-code" => Some("@moonshot-ai/kimi-code"),
         "claude" => Some("@anthropic-ai/claude-code"),
         "codex" => Some("@openai/codex"),
         _ => None,
@@ -2279,6 +2301,7 @@ fn installer_with_npm_fallback(installer: &str, tool: &str) -> String {
 
 fn posix_install_command_for(tool: &str) -> String {
     match tool {
+        "kimi-code" => installer_with_npm_fallback(KIMI_CODE_INSTALL_UNIX, tool),
         "claude" => installer_with_npm_fallback(CLAUDE_INSTALL_UNIX, tool),
         _ => static_fallback_command_for(tool, ToolLifecycleAction::Install),
     }
@@ -2385,6 +2408,7 @@ pub async fn probe_tool_installations(
 #[cfg(target_os = "windows")]
 fn wsl_distro_for_tool(tool: &str) -> Option<String> {
     let override_dir = match tool {
+        "kimi-code" => Some(crate::kimi_code_config::get_kimi_code_config_dir()),
         "claude" => crate::settings::get_claude_override_dir(),
         "codex" => crate::settings::get_codex_override_dir(),
         _ => None,
@@ -3296,6 +3320,32 @@ mod tests {
         assert_eq!(extract_version("claude 1.0.20"), "1.0.20");
         assert_eq!(extract_version("v2.3.4-beta.1"), "2.3.4-beta.1");
         assert_eq!(extract_version("no version here"), "no version here");
+    }
+
+    #[test]
+    fn kimi_code_uses_kimi_cli_command() {
+        assert_eq!(cli_command_for("kimi-code"), "kimi");
+        assert_eq!(cli_command_for("codex"), "codex");
+        assert_eq!(cli_command_for("claude"), "claude");
+    }
+
+    #[test]
+    fn kimi_code_uses_its_npm_package_without_official_update() {
+        assert_eq!(npm_package_for("kimi-code"), Some("@moonshot-ai/kimi-code"));
+        assert_eq!(
+            npm_install_command_for("kimi-code"),
+            Some("npm i -g @moonshot-ai/kimi-code@latest")
+        );
+        assert_eq!(official_update_args("kimi-code"), None);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn kimi_code_install_uses_official_script_with_npm_fallback() {
+        let command = install_command_for("kimi-code");
+        assert!(command.contains("https://code.kimi.com/kimi-code/install.sh"));
+        assert!(command.contains("npm i -g @moonshot-ai/kimi-code@latest"));
+        assert_eq!(command.split("||").count(), 2);
     }
 
     #[test]
@@ -4270,7 +4320,6 @@ mod tests {
             );
             assert!(!static_fallback_command("codex").contains("codex update"));
         }
-
     }
 
     #[cfg(target_os = "windows")]

@@ -517,17 +517,17 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
               <div className="flex flex-wrap gap-4">
                 <div className="flex items-center gap-2">
                   <Checkbox
-                    id="enable-claude"
-                    checked={enabledApps.claude}
+                    id="enable-kimi-code"
+                    checked={enabledApps["kimi-code"]}
                     onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, claude: checked })
+                      setEnabledApps({ ...enabledApps, "kimi-code": checked })
                     }
                   />
                   <label
-                    htmlFor="enable-claude"
+                    htmlFor="enable-kimi-code"
                     className="text-sm text-foreground cursor-pointer select-none"
                   >
-                    {t("mcp.unifiedPanel.apps.claude")}
+                    {t("mcp.unifiedPanel.apps.kimi-code")}
                   </label>
                 </div>
 
@@ -549,17 +549,17 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
 
                 <div className="flex items-center gap-2">
                   <Checkbox
-                    id="enable-kimi-code"
-                    checked={enabledApps["kimi-code"]}
+                    id="enable-claude"
+                    checked={enabledApps.claude}
                     onCheckedChange={(checked: boolean) =>
-                      setEnabledApps({ ...enabledApps, "kimi-code": checked })
+                      setEnabledApps({ ...enabledApps, claude: checked })
                     }
                   />
                   <label
-                    htmlFor="enable-kimi-code"
+                    htmlFor="enable-claude"
                     className="text-sm text-foreground cursor-pointer select-none"
                   >
-                    {t("mcp.unifiedPanel.apps.kimi-code")}
+                    {t("mcp.unifiedPanel.apps.claude")}
                   </label>
                 </div>
               </div>

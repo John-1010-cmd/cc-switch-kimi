@@ -16,9 +16,9 @@ const APP_CONFIG: Array<{
   icon: string;
   nameKey: string;
 }> = [
-  { id: "claude", icon: "claude", nameKey: "apps.claudeCode" },
-  { id: "codex", icon: "openai", nameKey: "apps.codex" },
   { id: "kimi-code", icon: "kimi", nameKey: "apps.kimi-code" },
+  { id: "codex", icon: "openai", nameKey: "apps.codex" },
+  { id: "claude", icon: "claude", nameKey: "apps.claudeCode" },
 ];
 
 export function AppVisibilitySettings({
