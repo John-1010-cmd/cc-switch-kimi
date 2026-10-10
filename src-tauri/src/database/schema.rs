@@ -291,6 +291,8 @@ impl Database {
                 input_token_semantics INTEGER NOT NULL DEFAULT 0,
                 total_cost_usd TEXT NOT NULL DEFAULT '0',
                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+                speed_output_tokens INTEGER NOT NULL DEFAULT 0,
+                speed_duration_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
             )",
             [],
@@ -516,6 +518,22 @@ impl Database {
                         log::info!("迁移数据库从 v16 到 v17（MCP 添加 Kimi Code 支持）");
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
+                    }
+                    17 => {
+                        if Self::table_exists(conn, "usage_daily_rollups")? {
+                            for column in ["speed_output_tokens", "speed_duration_ms"] {
+                                Self::add_column_if_missing(
+                                    conn,
+                                    "usage_daily_rollups",
+                                    column,
+                                    "INTEGER NOT NULL DEFAULT 0",
+                                )?;
+                            }
+                        }
+                        crate::services::session_usage_codex::reset_codex_timing_cursors_on_conn(
+                            conn,
+                        )?;
+                        Self::set_user_version(conn, 18)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -3103,6 +3121,36 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrate_v17_to_v18_preserves_usage_and_only_resets_codex_timing_cursors(
+    ) -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE usage_daily_rollups (date TEXT PRIMARY KEY, output_tokens INTEGER);
+             INSERT INTO usage_daily_rollups VALUES ('2026-07-10', 123);
+             CREATE TABLE session_log_sync (file_path TEXT PRIMARY KEY, last_modified INTEGER, last_line_offset INTEGER);
+             INSERT INTO session_log_sync VALUES ('/old/.codex/sessions/2026/07/10/rollout-2026-07-10T03-00-00-00000000-0000-4000-8000-000000000001.jsonl', 100, 42);
+             INSERT INTO session_log_sync VALUES ('/old/.kimi/sessions/chat.jsonl', 100, 12);"
+        )?;
+        Database::set_user_version(&conn, 17)?;
+        Database::apply_schema_migrations_on_conn(&conn)?;
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        let usage: (i64, i64, i64) = conn.query_row(
+            "SELECT output_tokens, speed_output_tokens, speed_duration_ms FROM usage_daily_rollups",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(usage, (123, 0, 0));
+        let offsets = conn
+            .prepare(
+                "SELECT last_modified, last_line_offset FROM session_log_sync ORDER BY file_path",
+            )?
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(offsets, vec![(0, 42), (100, 12)]);
+        Ok(())
+    }
 
     #[test]
     fn migrate_v12_to_v13_adds_input_token_semantics_columns() -> Result<(), AppError> {

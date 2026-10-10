@@ -99,6 +99,9 @@ export interface UsageSummary {
   realTotalTokens: number;
   /** cache_read / (input + cache_creation + cache_read), range 0–1 */
   cacheHitRate: number;
+  /** Only responses with usable timing contribute to generation speed. */
+  totalSpeedOutputTokens: number;
+  totalSpeedDurationMs: number;
 }
 
 export interface UsageSummaryByApp {

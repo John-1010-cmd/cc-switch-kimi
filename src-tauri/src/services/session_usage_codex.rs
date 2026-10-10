@@ -192,11 +192,67 @@ struct CachedReplayPrefix {
 #[derive(Debug)]
 struct ParsedTokenEvent {
     line_offset: i64,
+    timing_line_offset: i64,
     signature: TokenUsageSignature,
     delta: DeltaTokens,
     event_index: Option<u32>,
     model: String,
     timestamp: Option<String>,
+    timing: CodexRequestTiming,
+}
+
+/// Rollout event boundaries are estimates, not transport-level measurements.
+#[derive(Debug, Default, Clone, Copy)]
+struct CodexRequestTiming {
+    latency_ms: Option<i64>,
+    first_token_ms: Option<i64>,
+    duration_ms: Option<i64>,
+}
+
+#[derive(Default)]
+struct CodexTimingTracker {
+    started_at_ms: Option<i64>,
+    first_token_at_ms: Option<i64>,
+}
+
+impl CodexTimingTracker {
+    fn reset(&mut self, started_at_ms: Option<i64>) {
+        self.started_at_ms = started_at_ms;
+        self.first_token_at_ms = None;
+    }
+
+    fn observe_first_token(&mut self, timestamp: Option<i64>) {
+        if let Some(timestamp) = timestamp {
+            if self.started_at_ms.is_some_and(|start| timestamp >= start) {
+                self.first_token_at_ms = Some(
+                    self.first_token_at_ms
+                        .map_or(timestamp, |first| first.min(timestamp)),
+                );
+            }
+        }
+    }
+
+    fn finish(&self, ended_at_ms: Option<i64>) -> CodexRequestTiming {
+        let Some((start, end)) = self
+            .started_at_ms
+            .zip(ended_at_ms)
+            .filter(|(start, end)| end > start)
+        else {
+            return CodexRequestTiming::default();
+        };
+        let first = self
+            .first_token_at_ms
+            .filter(|first| *first >= start && *first <= end);
+        CodexRequestTiming {
+            latency_ms: Some(end - start),
+            first_token_ms: first.map(|first| first - start),
+            duration_ms: first.filter(|first| *first < end).map(|first| end - first),
+        }
+    }
+}
+
+fn event_timestamp_ms(value: &serde_json::Value) -> Option<i64> {
+    parse_timestamp(value.get("timestamp")).map(|timestamp| timestamp.timestamp_millis())
 }
 
 #[derive(Debug)]
@@ -706,9 +762,14 @@ fn parse_codex_file(
     let mut current_model = "unknown".to_string();
     let mut prev_total: Option<CumulativeTokens> = None;
     let mut event_index = 0u32;
-    let mut token_events = Vec::new();
+    let mut token_events: Vec<ParsedTokenEvent> = Vec::new();
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
+    let mut timing_tracker = CodexTimingTracker::default();
+    let mut response_timings = HashMap::new();
+    let mut turn_first_event = 0usize;
+    let mut last_model_output_at_ms = None;
+    let mut pending_legacy_timing = None;
 
     for line_result in reader.lines() {
         line_offset += 1;
@@ -723,10 +784,14 @@ fn parse_codex_file(
         let is_event_msg = line.contains("\"event_msg\"");
         let is_turn_context = line.contains("\"turn_context\"");
         let is_session_meta = line.contains("\"session_meta\"");
-        if !is_event_msg && !is_turn_context && !is_session_meta {
-            continue;
-        }
-        if is_event_msg && !line.contains("\"token_count\"") {
+        let is_usage_record = line.contains("\"token_usage_record\"");
+        let is_response_item = line.contains("\"response_item\"");
+        if !is_event_msg
+            && !is_turn_context
+            && !is_session_meta
+            && !is_usage_record
+            && !is_response_item
+        {
             continue;
         }
 
@@ -777,6 +842,10 @@ fn parse_codex_file(
                 }
             }
             "turn_context" => {
+                timing_tracker.reset(event_timestamp_ms(&value));
+                last_model_output_at_ms = None;
+                pending_legacy_timing = None;
+                turn_first_event = token_events.len();
                 if let Some(payload) = value.get("payload") {
                     if let Some(model) = payload
                         .get("model")
@@ -787,12 +856,105 @@ fn parse_codex_file(
                     }
                 }
             }
+            "token_usage_record" => {
+                let payload = &value["payload"];
+                if let Some(total) = parse_cumulative_tokens(&payload["thread_token_usage"]) {
+                    response_timings.insert(
+                        (total.input, total.cached_input, total.output),
+                        timing_tracker.finish(event_timestamp_ms(&value)),
+                    );
+                }
+            }
+            "response_item" => {
+                let payload = &value["payload"];
+                match payload["type"].as_str() {
+                    Some("function_call_output" | "custom_tool_call_output") => {
+                        if pending_legacy_timing.is_none() && last_model_output_at_ms.is_some() {
+                            pending_legacy_timing =
+                                Some(timing_tracker.finish(last_model_output_at_ms));
+                        }
+                        timing_tracker.reset(event_timestamp_ms(&value));
+                        last_model_output_at_ms = None;
+                    }
+                    Some("message") if payload["role"].as_str() == Some("user") => {
+                        timing_tracker.reset(event_timestamp_ms(&value));
+                        last_model_output_at_ms = None;
+                        pending_legacy_timing = None;
+                    }
+                    Some("reasoning" | "function_call" | "custom_tool_call" | "message") => {
+                        timing_tracker.observe_first_token(event_timestamp_ms(&value));
+                        last_model_output_at_ms = event_timestamp_ms(&value);
+                    }
+                    _ => {}
+                }
+            }
             "event_msg" => {
                 let Some(payload) = value.get("payload") else {
                     continue;
                 };
-                if payload.get("type").and_then(serde_json::Value::as_str) != Some("token_count") {
-                    continue;
+                match payload.get("type").and_then(serde_json::Value::as_str) {
+                    Some("task_started") => {
+                        timing_tracker.reset(event_timestamp_ms(&value));
+                        last_model_output_at_ms = None;
+                        pending_legacy_timing = None;
+                        turn_first_event = token_events.len();
+                        continue;
+                    }
+                    Some("item_completed") => {
+                        match payload["item"]["type"].as_str() {
+                            Some("UserMessage") => timing_tracker.reset(
+                                payload["completed_at_ms"]
+                                    .as_i64()
+                                    .or_else(|| event_timestamp_ms(&value)),
+                            ),
+                            Some("Reasoning" | "AgentMessage" | "Plan") => {
+                                timing_tracker
+                                    .observe_first_token(payload["started_at_ms"].as_i64());
+                                last_model_output_at_ms = payload["completed_at_ms"]
+                                    .as_i64()
+                                    .or_else(|| event_timestamp_ms(&value));
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    Some("task_complete") => {
+                        if let Some(event) = token_events
+                            .iter_mut()
+                            .skip(turn_first_event)
+                            .find(|event| event.event_index.is_some())
+                        {
+                            if event.timing.first_token_ms.is_none() {
+                                if let Some(first) = payload["time_to_first_token_ms"]
+                                    .as_i64()
+                                    .filter(|first| *first >= 0)
+                                {
+                                    if event
+                                        .timing
+                                        .latency_ms
+                                        .is_some_and(|latency| first < latency)
+                                    {
+                                        event.timing.first_token_ms = Some(first);
+                                        event.timing.duration_ms =
+                                            event.timing.latency_ms.map(|latency| latency - first);
+                                        event.timing_line_offset = line_offset;
+                                    }
+                                }
+                            }
+                        }
+                        timing_tracker.reset(None);
+                        last_model_output_at_ms = None;
+                        pending_legacy_timing = None;
+                        continue;
+                    }
+                    Some("turn_aborted") => {
+                        timing_tracker.reset(None);
+                        last_model_output_at_ms = None;
+                        pending_legacy_timing = None;
+                        continue;
+                    }
+                    Some("token_count") => {}
+                    _ => continue,
                 }
                 let Some(info) = payload.get("info").filter(|info| !info.is_null()) else {
                     continue;
@@ -820,6 +982,7 @@ fn parse_codex_file(
                 let Some(cumulative) = cumulative else {
                     continue;
                 };
+                let timing_key = (cumulative.input, cumulative.cached_input, cumulative.output);
                 let delta = if is_total {
                     let delta = compute_delta(&prev_total, &cumulative);
                     prev_total = Some(cumulative);
@@ -835,19 +998,28 @@ fn parse_codex_file(
                     cached_input: delta.cached_input.min(delta.input),
                     ..delta
                 };
+                let mut timing = CodexRequestTiming::default();
                 let nonzero_index = if delta.is_zero() {
                     None
                 } else {
                     has_billable_tokens = true;
                     event_index = event_index.saturating_add(1);
+                    timing = response_timings
+                        .remove(&timing_key)
+                        .or(pending_legacy_timing.take())
+                        .unwrap_or_else(|| timing_tracker.finish(event_timestamp_ms(&value)));
+                    timing_tracker.reset(event_timestamp_ms(&value));
+                    last_model_output_at_ms = None;
                     Some(event_index)
                 };
 
                 token_events.push(ParsedTokenEvent {
                     line_offset,
+                    timing_line_offset: line_offset,
                     signature,
                     delta,
                     event_index: nonzero_index,
+                    timing,
                     model: current_model.clone(),
                     timestamp: value
                         .get("timestamp")
@@ -1183,11 +1355,16 @@ fn sync_single_codex_file(
             }
             continue;
         }
+        let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
         if event.line_offset <= last_offset {
+            // A migration forces one historical pass. Normal incremental sync
+            // only revisits timing learned from newly appended completion events.
+            if last_modified == 0 || event.timing_line_offset > last_offset {
+                backfill_codex_request_timing(db, &request_id, event.timing)?;
+            }
             continue;
         }
 
-        let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
         match insert_codex_session_entry(
             db,
             &request_id,
@@ -1204,10 +1381,63 @@ fn sync_single_codex_file(
                 result.skipped = result.skipped.saturating_add(1);
             }
         }
+        backfill_codex_request_timing(db, &request_id, event.timing)?;
     }
 
     update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
     Ok(result)
+}
+
+fn backfill_codex_request_timing(
+    db: &Database,
+    request_id: &str,
+    timing: CodexRequestTiming,
+) -> Result<(), AppError> {
+    if timing.latency_ms.is_none()
+        && timing.first_token_ms.is_none()
+        && timing.duration_ms.is_none()
+    {
+        return Ok(());
+    }
+    let conn = lock_conn!(db.conn);
+    conn.execute(
+        "UPDATE proxy_request_logs SET
+            latency_ms = CASE WHEN latency_ms = 0 THEN COALESCE(?2, 0) ELSE latency_ms END,
+            first_token_ms = COALESCE(first_token_ms, ?3),
+            duration_ms = COALESCE(duration_ms, ?4)
+         WHERE request_id = ?1 AND data_source = 'codex_session'
+           AND (latency_ms = 0 OR first_token_ms IS NULL OR duration_ms IS NULL)",
+        rusqlite::params![
+            request_id,
+            timing.latency_ms,
+            timing.first_token_ms,
+            timing.duration_ms
+        ],
+    )
+    .map_err(|error| AppError::Database(format!("回填 Codex 请求计时失败: {error}")))?;
+    Ok(())
+}
+
+pub(crate) fn reset_codex_timing_cursors_on_conn(
+    conn: &rusqlite::Connection,
+) -> Result<(), AppError> {
+    if !sqlite_table_exists(conn, "session_log_sync")? {
+        return Ok(());
+    }
+    let codex_dir = get_codex_config_dir();
+    let paths = conn
+        .prepare("SELECT file_path FROM session_log_sync")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for path in paths {
+        if is_codex_cursor_path(&path, &codex_dir) {
+            conn.execute(
+                "UPDATE session_log_sync SET last_modified = 0 WHERE file_path = ?1",
+                [path],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// 插入单条 Codex 会话记录到 proxy_request_logs
@@ -1442,6 +1672,143 @@ mod tests {
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
         sync_single_codex_file(db, file, &build_rollout_index(&files))
+    }
+
+    #[test]
+    fn test_codex_request_timing_excludes_tool_execution_and_backfills_existing_rows(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        let values = [
+            session_meta(CHILD_A_ID),
+            turn_context(),
+            serde_json::json!({
+                "timestamp": "2026-07-10T03:00:03Z", "type": "event_msg",
+                "payload": { "type": "item_completed", "started_at_ms": 1783652402000i64,
+                    "completed_at_ms": 1783652403000i64, "item": {"type": "Reasoning"} }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-07-10T03:00:06Z", "type": "token_usage_record",
+                "payload": {"thread_token_usage": {"input_tokens": 1000,
+                    "cached_input_tokens": 500, "output_tokens": 100}}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-07-10T03:01:00Z", "type": "response_item",
+                "payload": {"type": "function_call_output", "output": "done"}
+            }),
+            token_count_at(1000, 500, 100, "2026-07-10T03:01:00Z"),
+        ];
+        write_jsonl(&file, &values);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        {
+            let conn = lock_conn!(db.conn);
+            let timing: (i64, Option<i64>, Option<i64>) = conn.query_row(
+                "SELECT latency_ms, first_token_ms, duration_ms FROM proxy_request_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                timing,
+                (5000, Some(1000), Some(4000)),
+                "tool execution must not inflate API time"
+            );
+            conn.execute("UPDATE proxy_request_logs SET latency_ms = 0, first_token_ms = NULL, duration_ms = NULL", [])?;
+            conn.execute("UPDATE session_log_sync SET last_modified = 0", [])?;
+        }
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let timing: (i64, Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT latency_ms, first_token_ms, duration_ms FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(timing, (5000, Some(1000), Some(4000)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_codex_timing_handles_tools_duplicate_counts_and_aborted_turns(
+    ) -> Result<(), AppError> {
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                serde_json::json!({
+                    "timestamp": "2026-07-10T03:00:03Z", "type": "event_msg",
+                    "payload": {"type": "item_completed", "started_at_ms": 1783652402000i64,
+                        "completed_at_ms": 1783652403000i64, "item": {"type": "Reasoning"}}
+                }),
+                serde_json::json!({"timestamp": "2026-07-10T03:00:06Z", "type": "response_item", "payload": {"type": "function_call"}}),
+                serde_json::json!({"timestamp": "2026-07-10T03:01:00Z", "type": "response_item", "payload": {"type": "function_call_output"}}),
+                token_count_at(1000, 500, 100, "2026-07-10T03:01:00Z"),
+                token_count_at(1000, 500, 100, "2026-07-10T03:01:01Z"),
+                serde_json::json!({
+                    "timestamp": "2026-07-10T03:01:03Z", "type": "event_msg",
+                    "payload": {"type": "item_completed", "started_at_ms": 1783652462000i64,
+                        "completed_at_ms": 1783652463000i64, "item": {"type": "Reasoning"}}
+                }),
+                serde_json::json!({"timestamp": "2026-07-10T03:01:06Z", "type": "response_item", "payload": {"type": "message", "role": "assistant"}}),
+                token_count_at(1300, 600, 300, "2026-07-10T03:01:06Z"),
+                serde_json::json!({"timestamp": "2026-07-10T03:01:07Z", "type": "event_msg", "payload": {"type": "turn_aborted"}}),
+                token_count_at(1500, 700, 400, "2026-07-10T03:01:15Z"),
+            ],
+        );
+        let parsed = parse_codex_file(&file, Some(CHILD_A_ID.into()))?;
+        let timings = parsed
+            .token_events
+            .iter()
+            .filter(|event| event.event_index.is_some())
+            .map(|event| {
+                (
+                    event.timing.latency_ms,
+                    event.timing.first_token_ms,
+                    event.timing.duration_ms,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            timings,
+            vec![
+                (Some(5000), Some(1000), Some(4000)),
+                (Some(6000), Some(2000), Some(4000)),
+                (None, None, None),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_timing_updates_when_completion_is_appended_after_import() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        let mut values = vec![
+            session_meta(CHILD_A_ID),
+            turn_context(),
+            token_count_at(0, 0, 0, "2026-07-10T03:00:01Z"),
+            token_count_at(1000, 500, 100, "2026-07-10T03:00:06Z"),
+        ];
+        write_jsonl(&file, &values);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        values.push(serde_json::json!({
+            "timestamp": "2026-07-10T03:00:07Z", "type": "event_msg",
+            "payload": {"type": "task_complete", "time_to_first_token_ms": 1000}
+        }));
+        write_jsonl(&file, &values);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let timing: (i64, i64, i64) = conn.query_row(
+            "SELECT latency_ms, first_token_ms, duration_ms FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(timing, (5000, 1000, 4000));
+        Ok(())
     }
 
     #[test]

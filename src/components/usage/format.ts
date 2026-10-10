@@ -1,3 +1,5 @@
+import type { RequestLog } from "@/types/usage";
+
 export function parseFiniteNumber(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : null;
@@ -95,20 +97,88 @@ export function formatTokensShort(
   compactDecimals: 1 | 2 = 1,
 ): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
-  const decimals = compactDecimals;
   const normalizedLang = normalizeLanguageTag(lang);
-  if (isTraditionalChineseLanguage(normalizedLang)) {
-    if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 億`;
-    if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 萬`;
-    return value.toLocaleString("zh-TW");
+  const traditional = isTraditionalChineseLanguage(normalizedLang);
+  const units = normalizedLang.startsWith("zh")
+    ? [
+        { scale: 1e12, suffix: " 兆", digits: 2 },
+        { scale: 1e8, suffix: traditional ? " 億" : " 亿", digits: 2 },
+        {
+          scale: 1e4,
+          suffix: traditional ? " 萬" : " 万",
+          digits: compactDecimals,
+        },
+      ]
+    : [
+        { scale: 1e12, suffix: "T", digits: 2 },
+        { scale: 1e9, suffix: "B", digits: 2 },
+        { scale: 1e6, suffix: "M", digits: 2 },
+        { scale: 1e3, suffix: "K", digits: compactDecimals },
+      ];
+  let index = units.findIndex((unit) => value >= unit.scale);
+  if (index < 0) {
+    return value.toLocaleString(getLocaleFromLanguage(lang));
   }
-  if (normalizedLang.startsWith("zh")) {
-    if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 亿`;
-    if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 万`;
-    return value.toLocaleString();
+  const unit = units[index];
+  if (
+    index > 0 &&
+    Number((value / unit.scale).toFixed(unit.digits)) >=
+      units[index - 1].scale / unit.scale
+  ) {
+    index -= 1;
   }
-  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(decimals)}K`;
-  return value.toLocaleString();
+  const selected = units[index];
+  return `${(value / selected.scale).toFixed(selected.digits)}${selected.suffix}`;
+}
+
+export function fmtUsdCompact(
+  value: unknown,
+  lang: string,
+  digits: number,
+): string {
+  const number = parseFiniteNumber(value);
+  if (number == null) return "--";
+  const threshold = normalizeLanguageTag(lang).startsWith("zh") ? 1e4 : 1e3;
+  return Math.abs(number) >= threshold
+    ? `${number < 0 ? "-" : ""}$${formatTokensShort(Math.abs(number), lang, 2)}`
+    : fmtUsd(number, digits);
+}
+
+/** Keep chart ticks on one line while the tooltip retains more precision. */
+export function formatTokensAxis(value: number, lang: string): string {
+  return formatTokensShort(value, lang, 1)
+    .replace(/\.0+(?=\s|[KMBT]|$)/, "")
+    .replace(" ", "");
+}
+
+export function getRequestTiming(
+  log: Pick<
+    RequestLog,
+    "latencyMs" | "durationMs" | "firstTokenMs" | "dataSource"
+  >,
+) {
+  const firstTokenMs =
+    log.firstTokenMs != null &&
+    Number.isFinite(log.firstTokenMs) &&
+    log.firstTokenMs >= 0
+      ? log.firstTokenMs
+      : null;
+  const elapsedMs =
+    Number.isFinite(log.latencyMs) && log.latencyMs > 0
+      ? log.latencyMs
+      : log.durationMs != null &&
+          Number.isFinite(log.durationMs) &&
+          log.durationMs > 0
+        ? log.durationMs + (firstTokenMs ?? 0)
+        : null;
+  return {
+    elapsedMs,
+    firstTokenMs,
+    estimated: log.dataSource === "codex_session",
+  };
+}
+
+export function formatTimingMs(value: number | null): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return "—";
+  return `${(value / 1000).toFixed(1)}s`;
 }

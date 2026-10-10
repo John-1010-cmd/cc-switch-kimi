@@ -85,6 +85,8 @@ function aggregateSummaries(items: UsageSummary[]): UsageSummary {
   let output = 0;
   let cacheCreation = 0;
   let cacheRead = 0;
+  let speedOutput = 0;
+  let speedDurationMs = 0;
 
   for (const s of items) {
     totalRequests += s.totalRequests;
@@ -94,6 +96,8 @@ function aggregateSummaries(items: UsageSummary[]): UsageSummary {
     output += s.totalOutputTokens;
     cacheCreation += s.totalCacheCreationTokens;
     cacheRead += s.totalCacheReadTokens;
+    speedOutput += s.totalSpeedOutputTokens ?? 0;
+    speedDurationMs += s.totalSpeedDurationMs ?? 0;
   }
 
   const cacheableInput = input + cacheCreation + cacheRead;
@@ -107,6 +111,8 @@ function aggregateSummaries(items: UsageSummary[]): UsageSummary {
     successRate: totalRequests > 0 ? (successCount / totalRequests) * 100 : 0,
     realTotalTokens: input + output + cacheCreation + cacheRead,
     cacheHitRate: cacheableInput > 0 ? cacheRead / cacheableInput : 0,
+    totalSpeedOutputTokens: speedOutput,
+    totalSpeedDurationMs: speedDurationMs,
   };
 }
 
@@ -184,6 +190,11 @@ export function UsageHero({
   const hitRate = summary?.cacheHitRate ?? 0;
   const totalCost = parseFiniteNumber(summary?.totalCost);
   const requests = summary?.totalRequests ?? 0;
+  const speedDurationMs = summary?.totalSpeedDurationMs ?? 0;
+  const averageTps =
+    speedDurationMs > 0
+      ? ((summary?.totalSpeedOutputTokens ?? 0) * 1000) / speedDurationMs
+      : null;
 
   if (isLoading) {
     return (
@@ -272,7 +283,9 @@ export function UsageHero({
             <div
               className={cn(
                 "grid grid-cols-2 gap-3",
-                showRealtime ? "lg:grid-cols-6" : "lg:grid-cols-4",
+                showRealtime
+                  ? "md:grid-cols-4 xl:grid-cols-7"
+                  : "md:grid-cols-3 xl:grid-cols-5",
               )}
             >
               <MiniStat
@@ -293,6 +306,35 @@ export function UsageHero({
                 value={formatTokensShort(cacheRead, lang)}
                 accent="text-emerald-500"
               />
+              <MiniStat
+                icon={<Gauge className="h-3.5 w-3.5" />}
+                label={t("usage.averageSpeed", "平均速度")}
+                value={formatRealtimeTps(averageTps)}
+                accent="text-teal-500"
+                muted={averageTps == null}
+                tooltip={t(
+                  "usage.averageSpeedHint",
+                  "所选范围内，有效请求的输出 Tokens ÷ 生成耗时；优先扣除首字等待，无计时的请求不参与，Codex 计时按会话事件估算",
+                )}
+              />
+              <div className="flex flex-col justify-center rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm">
+                <div className="flex items-center justify-between text-[11px] mb-2 gap-2">
+                  <span className="text-muted-foreground font-medium">
+                    {t("usage.cacheHitRate", "缓存命中率")}
+                  </span>
+                  <span className="font-bold text-emerald-500 tabular-nums">
+                    {hitPercentLabel}%
+                  </span>
+                </div>
+                <div className="relative h-1.5 rounded-full bg-muted/60 overflow-hidden">
+                  <motion.div
+                    className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${hitPercent}%` }}
+                    transition={{ duration: 0.8, ease: "easeOut" }}
+                  />
+                </div>
+              </div>
               {showRealtime && (
                 <>
                   <MiniStat
@@ -317,25 +359,6 @@ export function UsageHero({
                   />
                 </>
               )}
-
-              <div className="col-span-2 lg:col-span-1 flex flex-col justify-center rounded-xl border border-border/40 bg-background/40 p-3 shadow-sm">
-                <div className="flex items-center justify-between text-[11px] mb-2">
-                  <span className="text-muted-foreground font-medium">
-                    {t("usage.cacheHitRate", "缓存命中率")}
-                  </span>
-                  <span className="font-bold text-emerald-500 tabular-nums">
-                    {hitPercentLabel}%
-                  </span>
-                </div>
-                <div className="relative h-1.5 rounded-full bg-muted/60 overflow-hidden">
-                  <motion.div
-                    className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${hitPercent}%` }}
-                    transition={{ duration: 0.8, ease: "easeOut" }}
-                  />
-                </div>
-              </div>
             </div>
           </div>
         </CardContent>

@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { useRequestDetail } from "@/lib/query/usage";
 import { getFreshInputTokens, isUnpricedUsage } from "@/types/usage";
+import { formatTimingMs, getRequestTiming } from "./format";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -54,6 +55,7 @@ export function RequestDetailPanel({
   const freshInput = getFreshInputTokens(request);
   const isCacheInclusive = request.inputTokens !== freshInput;
   const unpriced = isUnpricedUsage(request);
+  const timing = getRequestTiming(request);
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -291,11 +293,29 @@ export function RequestDetailPanel({
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <dt className="text-muted-foreground">
-                  {t("usage.latency", "延迟")}
+                  {t("usage.elapsedTime", "用时")}
                 </dt>
-                <dd className="font-mono">{request.latencyMs}ms</dd>
+                <dd className="font-mono">
+                  {formatTimingMs(timing.elapsedMs)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {t("usage.firstTokenTime", "首字时间")}
+                </dt>
+                <dd className="font-mono">
+                  {formatTimingMs(timing.firstTokenMs)}
+                </dd>
               </div>
             </dl>
+            {timing.estimated && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {t(
+                  "usage.timingEstimated",
+                  "按会话事件估算，可能包含调度或等待时间",
+                )}
+              </p>
+            )}
           </div>
 
           {/* 错误信息 */}

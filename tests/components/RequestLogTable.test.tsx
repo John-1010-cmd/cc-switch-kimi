@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RequestLogTable } from "@/components/usage/RequestLogTable";
-import type { UsageRangeSelection } from "@/types/usage";
+import type { RequestLog, UsageRangeSelection } from "@/types/usage";
 
 const useRequestLogsMock = vi.hoisted(() => vi.fn());
 
@@ -69,6 +69,48 @@ describe("RequestLogTable", () => {
         isLoading: false,
       }),
     );
+  });
+
+  it("shows a recorded duration even when latency and first-token time are unavailable", () => {
+    const log: RequestLog = {
+      requestId: "session-timing",
+      providerId: "_codex_session",
+      providerName: "Codex (Session)",
+      appType: "codex",
+      model: "gpt-6.1-sol",
+      costMultiplier: "1",
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      inputCostUsd: "0.001",
+      outputCostUsd: "0.001",
+      cacheReadCostUsd: "0",
+      cacheCreationCostUsd: "0",
+      totalCostUsd: "0.002",
+      isStreaming: true,
+      latencyMs: 0,
+      durationMs: 12_400,
+      statusCode: 200,
+      createdAt: 1_710_000_000,
+      dataSource: "codex_session",
+    };
+    useRequestLogsMock.mockReturnValue({
+      data: { data: [log], total: 1, page: 0, pageSize: 20 },
+      isLoading: false,
+    });
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    expect(screen.getByText("12.4s")).toBeInTheDocument();
+    expect(screen.queryByText("0.0s")).not.toBeInTheDocument();
   });
 
   it("resets pagination when the dashboard range changes", async () => {

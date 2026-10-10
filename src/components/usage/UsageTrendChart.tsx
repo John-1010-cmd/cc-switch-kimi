@@ -14,6 +14,9 @@ import { Loader2 } from "lucide-react";
 import {
   fmtInt,
   fmtUsd,
+  fmtUsdCompact,
+  formatTokensShort,
+  formatTokensAxis,
   getLocaleFromLanguage,
   parseFiniteNumber,
 } from "./format";
@@ -102,10 +105,16 @@ export function UsageTrendChart({
                 style={{ backgroundColor: entry.color }}
               />
               <span className="font-medium">{entry.name}:</span>
-              <span>
+              <span
+                title={
+                  entry.dataKey === "cost"
+                    ? fmtUsd(entry.value, 6)
+                    : fmtInt(entry.value, dateLocale)
+                }
+              >
                 {entry.dataKey === "cost"
-                  ? fmtUsd(entry.value, 6)
-                  : fmtInt(entry.value, dateLocale)}
+                  ? fmtUsdCompact(entry.value, language, 6)
+                  : formatTokensShort(entry.value, language, 2)}
               </span>
             </div>
           ))}
@@ -159,10 +168,11 @@ export function UsageTrendChart({
             />
             <YAxis
               yAxisId="tokens"
+              width={80}
               axisLine={false}
               tickLine={false}
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-              tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`}
+              tickFormatter={(value) => formatTokensAxis(value, language)}
             />
             <YAxis
               yAxisId="cost"
@@ -170,7 +180,7 @@ export function UsageTrendChart({
               axisLine={false}
               tickLine={false}
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-              tickFormatter={(value) => `$${value}`}
+              tickFormatter={(value) => fmtUsdCompact(value, language, 2)}
             />
             <Tooltip content={<CustomTooltip />} />
             <Legend />

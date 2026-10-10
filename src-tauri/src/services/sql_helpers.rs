@@ -26,8 +26,7 @@
 /// fresh_input_sql 的 TOTAL 分支扣减。注意 "cacheCreation 恒 0、UI 显示 N/A"
 /// 的假设仅对 OpenAI 协议 proxy app（codex/gemini）成立，
 /// 对 kimi-code 不成立——其 cache-write 的 N/A 判定须按数据驱动。
-pub(crate) const CACHE_INCLUSIVE_APP_TYPES: &[&str] =
-    &["codex", "gemini", "kimi-code"];
+pub(crate) const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini", "kimi-code"];
 
 /// `app_type` 的存储 `input_tokens` 是否已包含 cache read/write。
 pub(crate) fn is_cache_inclusive_app(app_type: &str) -> bool {
@@ -71,6 +70,35 @@ pub fn fresh_input_sql(alias: &str) -> String {
               THEN ({prefix}input_tokens - {prefix}cache_read_tokens) \
               ELSE {prefix}input_tokens END"
     )
+}
+
+/// Valid generation time for a successful response. Prefer a recorded stream
+/// duration; otherwise subtract first-token wait from total request time.
+/// The 100 ms floor matches the realtime speed sampler and rejects bad clocks.
+pub(crate) fn speed_duration_sql(alias: &str) -> String {
+    let prefix = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{alias}.")
+    };
+    let duration = format!(
+        "COALESCE(NULLIF({prefix}duration_ms, 0), {prefix}latency_ms - COALESCE({prefix}first_token_ms, 0))"
+    );
+    format!(
+        "CASE WHEN {prefix}status_code >= 200 AND {prefix}status_code < 300 \
+         AND {prefix}output_tokens > 0 AND ({duration}) >= 100 \
+         THEN ({duration}) ELSE 0 END"
+    )
+}
+
+pub(crate) fn speed_output_tokens_sql(alias: &str) -> String {
+    let duration = speed_duration_sql(alias);
+    let prefix = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{alias}.")
+    };
+    format!("CASE WHEN ({duration}) > 0 THEN {prefix}output_tokens ELSE 0 END")
 }
 
 #[cfg(test)]

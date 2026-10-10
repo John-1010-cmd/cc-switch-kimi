@@ -8,7 +8,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useModelStats } from "@/lib/query/usage";
-import { fmtUsd } from "./format";
+import {
+  fmtInt,
+  fmtUsd,
+  fmtUsdCompact,
+  formatTokensShort,
+  getResolvedLang,
+} from "./format";
 import type { UsageRangeSelection } from "@/types/usage";
 
 interface ModelStatsTableProps {
@@ -28,7 +34,8 @@ export function ModelStatsTable({
   model,
   refreshIntervalMs,
 }: ModelStatsTableProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang = getResolvedLang(i18n);
   const { data: stats, isLoading } = useModelStats(
     range,
     { appType, providerName, model },
@@ -86,17 +93,29 @@ export function ModelStatsTable({
                 <TableCell className="font-mono text-sm">
                   {stat.model}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.requestCount.toLocaleString()}
+                <TableCell
+                  className="text-right tabular-nums"
+                  title={fmtInt(stat.requestCount)}
+                >
+                  {formatTokensShort(stat.requestCount, lang, 2)}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.totalInputTokens.toLocaleString()}
+                <TableCell
+                  className="text-right tabular-nums"
+                  title={fmtInt(stat.totalInputTokens)}
+                >
+                  {formatTokensShort(stat.totalInputTokens, lang, 2)}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.totalOutputTokens.toLocaleString()}
+                <TableCell
+                  className="text-right tabular-nums"
+                  title={fmtInt(stat.totalOutputTokens)}
+                >
+                  {formatTokensShort(stat.totalOutputTokens, lang, 2)}
                 </TableCell>
-                <TableCell className="text-right">
-                  {stat.totalCacheReadTokens.toLocaleString()}
+                <TableCell
+                  className="text-right tabular-nums"
+                  title={fmtInt(stat.totalCacheReadTokens)}
+                >
+                  {formatTokensShort(stat.totalCacheReadTokens, lang, 2)}
                 </TableCell>
                 <CacheHitRateCell
                   rate={stat.cacheHitRate}
@@ -106,11 +125,17 @@ export function ModelStatsTable({
                     stat.totalCacheReadTokens
                   }
                 />
-                <TableCell className="text-right">
-                  {fmtUsd(stat.totalCost, 4)}
+                <TableCell
+                  className="text-right"
+                  title={fmtUsd(stat.totalCost, 6)}
+                >
+                  {fmtUsdCompact(stat.totalCost, lang, 4)}
                 </TableCell>
-                <TableCell className="text-right">
-                  {fmtUsd(stat.avgCostPerRequest, 6)}
+                <TableCell
+                  className="text-right"
+                  title={fmtUsd(stat.avgCostPerRequest, 6)}
+                >
+                  {fmtUsdCompact(stat.avgCostPerRequest, lang, 6)}
                 </TableCell>
               </TableRow>
             ))

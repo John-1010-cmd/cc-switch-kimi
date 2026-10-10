@@ -30,7 +30,9 @@ import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import {
   fmtInt,
   fmtUsd,
+  formatTimingMs,
   getLocaleFromLanguage,
+  getRequestTiming,
   parseFiniteNumber,
 } from "./format";
 
@@ -297,26 +299,32 @@ export function RequestLogTable({
                             )}
                         </TableCell>
                         <TableCell className="text-center whitespace-nowrap text-xs tabular-nums">
-                          {log.latencyMs === 0 && log.firstTokenMs == null ? (
-                            <span
-                              className="text-muted-foreground/70"
-                              title={t(
-                                "usage.timingNotRecorded",
-                                "会话导入日志无计时数据",
-                              )}
-                            >
-                              —
-                            </span>
-                          ) : (
-                            <>
-                              {(log.latencyMs / 1000).toFixed(1)}s
-                              {log.firstTokenMs != null && (
+                          {(() => {
+                            const timing = getRequestTiming(log);
+                            return (
+                              <span
+                                title={
+                                  timing.estimated
+                                    ? t(
+                                        "usage.timingEstimated",
+                                        "按会话事件估算，可能包含调度或等待时间",
+                                      )
+                                    : timing.elapsedMs == null ||
+                                        timing.firstTokenMs == null
+                                      ? t(
+                                          "usage.timingNotRecorded",
+                                          "源日志未记录完整计时数据",
+                                        )
+                                      : undefined
+                                }
+                              >
+                                <span>{formatTimingMs(timing.elapsedMs)}</span>
                                 <span className="text-muted-foreground">
-                                  /{(log.firstTokenMs / 1000).toFixed(1)}s
+                                  /{formatTimingMs(timing.firstTokenMs)}
                                 </span>
-                              )}
-                            </>
-                          )}
+                              </span>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-center">
                           <span

@@ -6,7 +6,8 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::ModelPricing;
 use crate::services::sql_helpers::{
-    fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_TOTAL,
+    fresh_input_sql, speed_duration_sql, speed_output_tokens_sql, INPUT_TOKEN_SEMANTICS_FRESH,
+    INPUT_TOKEN_SEMANTICS_TOTAL,
 };
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -32,6 +33,11 @@ pub struct UsageSummary {
     /// cache_read / (input + cache_creation + cache_read). Range 0.0–1.0.
     /// Reported as a fraction; multiply by 100 in UI for percentage display.
     pub cache_hit_rate: f64,
+    /// Numerator and denominator for a weighted generation speed (tokens/s).
+    #[serde(default)]
+    pub total_speed_output_tokens: u64,
+    #[serde(default)]
+    pub total_speed_duration_ms: u64,
 }
 
 /// Per-app-type usage summary used by the dashboard breakdown rail.
@@ -653,6 +659,8 @@ impl Database {
 
         let fresh_input_detail = fresh_input_sql("l");
         let fresh_input_rollup = fresh_input_sql("r");
+        let speed_output = speed_output_tokens_sql("l");
+        let speed_duration = speed_duration_sql("l");
         let sql = format!(
             "SELECT
                 COALESCE(d.total_requests, 0) + COALESCE(r.total_requests, 0),
@@ -661,7 +669,9 @@ impl Database {
                 COALESCE(d.total_output_tokens, 0) + COALESCE(r.total_output_tokens, 0),
                 COALESCE(d.total_cache_creation_tokens, 0) + COALESCE(r.total_cache_creation_tokens, 0),
                 COALESCE(d.total_cache_read_tokens, 0) + COALESCE(r.total_cache_read_tokens, 0),
-                COALESCE(d.success_count, 0) + COALESCE(r.success_count, 0)
+                COALESCE(d.success_count, 0) + COALESCE(r.success_count, 0),
+                COALESCE(d.speed_output, 0) + COALESCE(r.speed_output, 0),
+                COALESCE(d.speed_duration, 0) + COALESCE(r.speed_duration, 0)
             FROM
                 (SELECT
                     COUNT(*) as total_requests,
@@ -670,7 +680,9 @@ impl Database {
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
                     COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens,
-                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
+                    COALESCE(SUM({speed_output}), 0) as speed_output,
+                    COALESCE(SUM({speed_duration}), 0) as speed_duration
                  FROM proxy_request_logs l {detail_join} {where_clause}) d,
                 (SELECT
                     COALESCE(SUM(r.request_count), 0) as total_requests,
@@ -679,7 +691,9 @@ impl Database {
                     COALESCE(SUM(r.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(r.cache_creation_tokens), 0) as total_cache_creation_tokens,
                     COALESCE(SUM(r.cache_read_tokens), 0) as total_cache_read_tokens,
-                    COALESCE(SUM(r.success_count), 0) as success_count
+                    COALESCE(SUM(r.success_count), 0) as success_count,
+                    COALESCE(SUM(r.speed_output_tokens), 0) as speed_output,
+                    COALESCE(SUM(r.speed_duration_ms), 0) as speed_duration
                  FROM usage_daily_rollups r {rollup_join} {rollup_where}) r"
         );
 
@@ -720,6 +734,8 @@ impl Database {
                 success_rate,
                 real_total_tokens,
                 cache_hit_rate,
+                total_speed_output_tokens: row.get::<_, i64>(7)? as u64,
+                total_speed_duration_ms: row.get::<_, i64>(8)? as u64,
             })
         })?;
 
@@ -798,6 +814,8 @@ impl Database {
         // 折叠 claude-desktop → claude：内层投影成同一桶名，外层 GROUP BY 自然合并。
         let detail_app_type = folded_app_type_sql("l.app_type");
         let rollup_app_type = folded_app_type_sql("r.app_type");
+        let speed_output = speed_output_tokens_sql("l");
+        let speed_duration = speed_duration_sql("l");
 
         let sql = format!(
             "SELECT app_type,
@@ -807,7 +825,9 @@ impl Database {
                 SUM(output_t) as output_t,
                 SUM(cache_create_t) as cache_create_t,
                 SUM(cache_read_t) as cache_read_t,
-                SUM(success_count) as success_count
+                SUM(success_count) as success_count,
+                SUM(speed_output) as speed_output,
+                SUM(speed_duration) as speed_duration
             FROM (
                 SELECT {detail_app_type} as app_type,
                     COUNT(*) as req_count,
@@ -816,7 +836,9 @@ impl Database {
                     COALESCE(SUM(l.output_tokens), 0) as output_t,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as cache_create_t,
                     COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_t,
-                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count
+                    COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
+                    COALESCE(SUM({speed_output}), 0) as speed_output,
+                    COALESCE(SUM({speed_duration}), 0) as speed_duration
                 FROM proxy_request_logs l {detail_join} {detail_where}
                 GROUP BY l.app_type
                 UNION ALL
@@ -827,7 +849,9 @@ impl Database {
                     COALESCE(SUM(r.output_tokens), 0),
                     COALESCE(SUM(r.cache_creation_tokens), 0),
                     COALESCE(SUM(r.cache_read_tokens), 0),
-                    COALESCE(SUM(r.success_count), 0)
+                    COALESCE(SUM(r.success_count), 0),
+                    COALESCE(SUM(r.speed_output_tokens), 0),
+                    COALESCE(SUM(r.speed_duration_ms), 0)
                 FROM usage_daily_rollups r {rollup_join} {rollup_where}
                 GROUP BY r.app_type
             )
@@ -873,6 +897,8 @@ impl Database {
                     success_rate,
                     real_total_tokens,
                     cache_hit_rate,
+                    total_speed_output_tokens: row.get::<_, i64>(8)? as u64,
+                    total_speed_duration_ms: row.get::<_, i64>(9)? as u64,
                 },
             })
         })?;
@@ -2406,6 +2432,124 @@ fn should_try_pricing_prefix_match(model_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_average_speed_uses_only_timed_successful_output_and_respects_scope(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            for (id, app, model, output, latency, first, duration, status) in [
+                ("proxy", "codex", "slow", 100, 5000, Some(1000), None, 200),
+                (
+                    "session",
+                    "kimi-code",
+                    "fast",
+                    200,
+                    2500,
+                    Some(500),
+                    Some(2000),
+                    200,
+                ),
+                ("missing", "codex", "slow", 9000, 0, None, None, 200),
+                ("failed", "codex", "slow", 500, 1000, None, Some(1000), 500),
+                ("tiny", "codex", "slow", 9999, 50, None, Some(50), 200),
+                ("empty", "codex", "slow", 0, 1000, None, Some(1000), 200),
+                (
+                    "bad-clock",
+                    "codex",
+                    "slow",
+                    9000,
+                    1000,
+                    Some(2000),
+                    None,
+                    200,
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                     output_tokens, latency_ms, first_token_ms, duration_ms, status_code, created_at)
+                     VALUES (?1, 'p1', ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1000)",
+                    params![id, app, model, output, latency, first, duration, status],
+                )?;
+            }
+        }
+        let summary = db.get_usage_summary(None, None, None, None, None)?;
+        assert_eq!(
+            (
+                summary.total_speed_output_tokens,
+                summary.total_speed_duration_ms
+            ),
+            (300, 6000)
+        );
+        let filtered =
+            db.get_usage_summary(Some(0), Some(2000), Some("codex"), None, Some("slow"))?;
+        assert_eq!(
+            (
+                filtered.total_speed_output_tokens,
+                filtered.total_speed_duration_ms
+            ),
+            (100, 4000)
+        );
+        let outside = db.get_usage_summary(Some(2000), None, None, None, None)?;
+        assert_eq!(outside.total_speed_duration_ms, 0);
+        let apps = db.get_usage_summary_by_app(None, None, None, None)?;
+        assert_eq!(
+            apps.iter()
+                .map(|app| app.summary.total_speed_output_tokens)
+                .sum::<u64>(),
+            300
+        );
+        assert_eq!(
+            apps.iter()
+                .map(|app| app.summary.total_speed_duration_ms)
+                .sum::<u64>(),
+            6000
+        );
+        let models = db.get_usage_summary_by_app(None, None, None, Some("fast"))?;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].summary.total_speed_duration_ms, 2000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_average_speed_survives_rollup_and_merges_new_samples() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let old_ts = chrono::Utc::now().timestamp() - 40 * 86400;
+        for (id, output, duration) in [("old-speed", 100, 4000), ("later-speed", 300, 3000)] {
+            {
+                let conn = lock_conn!(db.conn);
+                conn.execute(
+                    "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model,
+                     output_tokens, latency_ms, duration_ms, status_code, created_at)
+                     VALUES (?1, 'p1', 'codex', 'speed-model', ?2, ?3, ?3, 200, ?4)",
+                    params![id, output, duration, old_ts],
+                )?;
+            }
+            let before = db.get_usage_summary(None, None, None, None, None)?;
+            assert_eq!(db.rollup_and_prune(30)?, 1);
+            let after = db.get_usage_summary(None, None, None, None, None)?;
+            assert_eq!(
+                after.total_speed_output_tokens,
+                before.total_speed_output_tokens
+            );
+            assert_eq!(
+                after.total_speed_duration_ms,
+                before.total_speed_duration_ms
+            );
+        }
+        let summary = db.get_usage_summary(None, None, None, None, None)?;
+        assert_eq!(
+            (
+                summary.total_speed_output_tokens,
+                summary.total_speed_duration_ms
+            ),
+            (400, 7000)
+        );
+        let apps = db.get_usage_summary_by_app(None, None, None, None)?;
+        assert_eq!(apps[0].summary.total_speed_duration_ms, 7000);
+        Ok(())
+    }
 
     fn local_ts(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
         match Local.with_ymd_and_hms(year, month, day, hour, minute, second) {
@@ -3978,16 +4122,49 @@ mod tests {
             let conn = lock_conn!(db.conn);
             // 同一模型跨 codex 与 claude-desktop（折叠为 claude）两个 app。
             insert_usage_log(
-                &conn, "m-codex-1", "codex", "p-x", "gpt-5.4", "proxy", 40_000, 1000, 80, 600, 0,
-                200, "0.20",
+                &conn,
+                "m-codex-1",
+                "codex",
+                "p-x",
+                "gpt-5.4",
+                "proxy",
+                40_000,
+                1000,
+                80,
+                600,
+                0,
+                200,
+                "0.20",
             )?;
             insert_usage_log(
-                &conn, "m-codex-2", "codex", "p-x", "gpt-5.4", "proxy", 40_100, 500, 20, 100, 0,
-                200, "0.05",
+                &conn,
+                "m-codex-2",
+                "codex",
+                "p-x",
+                "gpt-5.4",
+                "proxy",
+                40_100,
+                500,
+                20,
+                100,
+                0,
+                200,
+                "0.05",
             )?;
             insert_usage_log(
-                &conn, "m-desktop-1", "claude-desktop", "p-c", "gpt-5.4", "proxy", 40_200, 300,
-                40, 50, 10, 200, "0.10",
+                &conn,
+                "m-desktop-1",
+                "claude-desktop",
+                "p-c",
+                "gpt-5.4",
+                "proxy",
+                40_200,
+                300,
+                40,
+                50,
+                10,
+                200,
+                "0.10",
             )?;
             // rollup 分支同模型 claude 贡献一行：与折叠后的 desktop 行去重。
             conn.execute(

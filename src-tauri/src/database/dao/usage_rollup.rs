@@ -118,6 +118,8 @@ impl Database {
         let effective_filter = effective_usage_log_filter("l");
         let fresh_detail_input = fresh_input_sql("l");
         let fresh_old_input = fresh_input_sql("old");
+        let speed_output = crate::services::sql_helpers::speed_output_tokens_sql("l");
+        let speed_duration = crate::services::sql_helpers::speed_duration_sql("l");
         // request_model 维度保留路由接管的「客户端别名 → 真实模型」映射，
         // pricing_model 维度保留写入时的计价基准（request 计价模式下与 model 分叉）；
         // 明细行的这两列可能为 NULL（历史/手工数据），归一为 ''。
@@ -127,7 +129,8 @@ impl Database {
                  request_count, success_count,
                  input_tokens, output_tokens,
                  cache_read_tokens, cache_creation_tokens,
-                 input_token_semantics, total_cost_usd, avg_latency_ms)
+                 input_token_semantics, total_cost_usd, avg_latency_ms,
+                 speed_output_tokens, speed_duration_ms)
             SELECT
                 d, a, p, m, rm, pm,
                 COALESCE(old.request_count, 0) + new_req,
@@ -142,7 +145,9 @@ impl Database {
                     THEN (COALESCE(old.avg_latency_ms, 0) * COALESCE(old.request_count, 0)
                           + new_lat * new_req)
                          / (COALESCE(old.request_count, 0) + new_req)
-                    ELSE 0 END
+                    ELSE 0 END,
+                COALESCE(old.speed_output_tokens, 0) + new_speed_output,
+                COALESCE(old.speed_duration_ms, 0) + new_speed_duration
             FROM (
                 SELECT
                     date(l.created_at, 'unixepoch', 'localtime') as d,
@@ -156,7 +161,9 @@ impl Database {
                     COALESCE(SUM(l.cache_read_tokens), 0) as new_cr,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as new_cc,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as new_cost,
-                    COALESCE(AVG(l.latency_ms), 0) as new_lat
+                    COALESCE(AVG(l.latency_ms), 0) as new_lat,
+                    COALESCE(SUM({speed_output}), 0) as new_speed_output,
+                    COALESCE(SUM({speed_duration}), 0) as new_speed_duration
                 FROM proxy_request_logs l
                 WHERE l.created_at < ?1 AND {effective_filter}
                 GROUP BY d, a, p, m, rm, pm
