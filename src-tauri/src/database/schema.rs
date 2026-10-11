@@ -305,7 +305,8 @@ impl Database {
                 file_path TEXT PRIMARY KEY,
                 last_modified INTEGER NOT NULL,
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
-                last_synced_at INTEGER NOT NULL
+                last_synced_at INTEGER NOT NULL,
+                last_file_size INTEGER
             )",
             [],
         )
@@ -534,6 +535,27 @@ impl Database {
                             conn,
                         )?;
                         Self::set_user_version(conn, 18)?;
+                    }
+                    18 => {
+                        // NULL means an older cursor has no size fingerprint;
+                        // Codex will replay its saved range once with deduplication,
+                        // without deleting historical usage.
+                        if Self::table_exists(conn, "session_log_sync")? {
+                            Self::add_column_if_missing(
+                                conn,
+                                "session_log_sync",
+                                "last_file_size",
+                                "INTEGER",
+                            )?;
+                        }
+                        Self::set_user_version(conn, 19)?;
+                    }
+                    19 => {
+                        // v19 may already have saved a size after skipping a
+                        // legacy-consumed tail. Force one deduplicated recovery
+                        // pass, retaining usage, rollups and line offsets.
+                        crate::services::session_usage_codex::invalidate_codex_sync_fingerprints_on_conn(conn)?;
+                        Self::set_user_version(conn, 20)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -3121,6 +3143,91 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrate_v19_to_v20_only_invalidates_codex_fingerprints() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            r"CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY);
+             INSERT INTO proxy_request_logs VALUES ('keep-existing-usage');
+             CREATE TABLE usage_daily_rollups (date TEXT PRIMARY KEY, request_count INTEGER);
+             INSERT INTO usage_daily_rollups VALUES ('2000-01-01', 7);
+             CREATE TABLE session_log_sync (
+                 file_path TEXT PRIMARY KEY, last_modified INTEGER,
+                 last_line_offset INTEGER, last_synced_at INTEGER, last_file_size INTEGER
+             );
+             INSERT INTO session_log_sync VALUES
+             ('/old/.codex/sessions/rollout-old-00000000-0000-4000-8000-000000000001.jsonl', 123, 406, 456, 1000),
+             ('C:\old\.codex\archived_sessions\rollout-old-00000000-0000-4000-8000-000000000002.jsonl', 123, 80, 456, 500),
+             ('/old/.kimi/sessions/chat.jsonl', 123, 12, 456, 250);",
+        )?;
+        Database::set_user_version(&conn, 19)?;
+        Database::apply_schema_migrations_on_conn(&conn)?;
+        assert_eq!(Database::get_user_version(&conn)?, 20);
+        let cursors = conn.prepare("SELECT last_modified, last_line_offset, last_synced_at, last_file_size FROM session_log_sync ORDER BY file_path")?
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<u64>>(3)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            cursors,
+            vec![
+                (0, 406, 456, None),
+                (123, 12, 456, Some(250)),
+                (0, 80, 456, None)
+            ]
+        );
+        assert_eq!(
+            conn.query_row("SELECT request_id FROM proxy_request_logs", [], |row| {
+                row.get::<_, String>(0)
+            })?,
+            "keep-existing-usage"
+        );
+        assert_eq!(
+            conn.query_row("SELECT request_count FROM usage_daily_rollups", [], |row| {
+                row.get::<_, i64>(0)
+            })?,
+            7
+        );
+        // Reopening after the importer saves its fingerprint must not invalidate it again.
+        conn.execute(
+            "UPDATE session_log_sync SET last_modified = 789, last_file_size = 999",
+            [],
+        )?;
+        Database::apply_schema_migrations_on_conn(&conn)?;
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM session_log_sync WHERE last_modified = 789 AND last_file_size = 999", [], |row| row.get::<_, i64>(0))?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v18_to_v19_preserves_usage_and_sync_offsets() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY);
+             INSERT INTO proxy_request_logs VALUES ('keep-existing-usage');
+             CREATE TABLE session_log_sync (
+                 file_path TEXT PRIMARY KEY, last_modified INTEGER,
+                 last_line_offset INTEGER, last_synced_at INTEGER
+             );
+             INSERT INTO session_log_sync VALUES ('rollout.jsonl', 123, 406, 456);",
+        )?;
+        Database::set_user_version(&conn, 18)?;
+        Database::apply_schema_migrations_on_conn(&conn)?;
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        let cursor: (i64, i64, i64, Option<i64>) = conn.query_row(
+            "SELECT last_modified, last_line_offset, last_synced_at, last_file_size
+             FROM session_log_sync WHERE file_path = 'rollout.jsonl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cursor, (123, 406, 456, None));
+        let request_id: String =
+            conn.query_row("SELECT request_id FROM proxy_request_logs", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(request_id, "keep-existing-usage");
+        Ok(())
+    }
 
     #[test]
     fn migrate_v17_to_v18_preserves_usage_and_only_resets_codex_timing_cursors(

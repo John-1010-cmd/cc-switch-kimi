@@ -19,7 +19,8 @@ use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::session_usage::{
-    get_sync_state, metadata_modified_nanos, update_sync_state, SessionSyncResult,
+    get_sync_state_with_file_size, metadata_modified_nanos, update_sync_state_with_file_size,
+    SessionSyncResult,
 };
 use crate::services::usage_stats::{
     find_model_pricing, has_suspected_codex_session_duplicate, should_skip_session_insert, DedupKey,
@@ -536,10 +537,13 @@ fn parse_token_signature(info: &serde_json::Value) -> Option<TokenUsageSignature
     (total.is_some() || last.is_some()).then_some(TokenUsageSignature { total, last })
 }
 
-fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), AppError> {
+fn get_codex_sync_state(
+    db: &Database,
+    file_path: &Path,
+) -> Result<(i64, i64, Option<u64>), AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
-    let state = get_sync_state(db, &file_path_str)?;
-    if state != (0, 0)
+    let state = get_sync_state_with_file_size(db, &file_path_str)?;
+    if state != (0, 0, None)
         || file_path
             .parent()
             .and_then(Path::file_name)
@@ -556,7 +560,7 @@ fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), A
     let backslash_suffix = format!("\\{file_name}");
     let conn = lock_conn!(db.conn);
     let inherited = conn.query_row(
-        "SELECT last_modified, last_line_offset
+        "SELECT last_modified, last_line_offset, last_file_size
          FROM session_log_sync
          WHERE file_path <> ?1
            AND (substr(file_path, -length(?2)) = ?2
@@ -564,13 +568,25 @@ fn get_codex_sync_state(db: &Database, file_path: &Path) -> Result<(i64, i64), A
          ORDER BY last_line_offset DESC, last_modified DESC
          LIMIT 1",
         rusqlite::params![file_path_str, slash_suffix, backslash_suffix],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<u64>>(2)?,
+            ))
+        },
     );
     drop(conn);
 
     match inherited {
         Ok(inherited) => {
-            update_sync_state(db, &file_path_str, inherited.0, inherited.1)?;
+            update_sync_state_with_file_size(
+                db,
+                &file_path_str,
+                inherited.0,
+                inherited.1,
+                inherited.2,
+            )?;
             Ok(inherited)
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(state),
@@ -793,7 +809,7 @@ fn parse_codex_file_with_baseline(
 ) -> Result<ParsedCodexFile, AppError> {
     let file =
         fs::File::open(file_path).map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
     let mut parent = ParentResolution::None;
@@ -809,12 +825,37 @@ fn parse_codex_file_with_baseline(
     let mut last_model_output_at_ms = None;
     let mut pending_legacy_timing = None;
 
-    for line_result in reader.lines() {
-        line_offset += 1;
-        let line = match line_result {
+    let mut line_bytes = Vec::new();
+    loop {
+        line_bytes.clear();
+        let read = reader
+            .read_until(b'\n', &mut line_bytes)
+            .map_err(|error| AppError::Config(format!("读取 Codex 日志失败: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        let has_newline = line_bytes.ends_with(b"\n");
+        let line = match std::str::from_utf8(&line_bytes) {
             Ok(line) => line,
-            Err(_) => continue,
+            // A writer can stop at EOF in the middle of a UTF-8 character.
+            // Leave that line unconsumed until the remaining bytes arrive.
+            Err(_) if !has_newline => break,
+            Err(error) => {
+                line_offset += 1;
+                log::warn!(
+                    "[CODEX-SYNC] 跳过非 UTF-8 日志行 {}:{}: {error}",
+                    file_path.display(),
+                    line_offset
+                );
+                continue;
+            }
         };
+        // Never consume an incomplete trailing JSON record. Complete records
+        // without a final newline are still valid in archived JSONL files.
+        if !has_newline && serde_json::from_str::<serde_json::Value>(line).is_err() {
+            break;
+        }
+        line_offset += 1;
         if line.trim().is_empty() {
             continue;
         }
@@ -833,7 +874,7 @@ fn parse_codex_file_with_baseline(
             continue;
         }
 
-        let value: serde_json::Value = match serde_json::from_str(&line) {
+        let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(_) => continue,
         };
@@ -1334,10 +1375,11 @@ fn sync_single_codex_file(
     let file_size = metadata.len();
 
     // 检查同步状态
-    let (last_modified, last_offset) = get_codex_sync_state(db, file_path)?;
+    let (last_modified, mut last_offset, last_file_size) = get_codex_sync_state(db, file_path)?;
 
-    // 文件未变化则跳过
-    if file_modified <= last_modified {
+    // Active rollout writers can append without updating the visible mtime
+    // (notably on Windows). Only skip when BOTH metadata fingerprints match.
+    if file_modified == last_modified && last_file_size == Some(file_size) {
         return Ok(CodexFileSyncResult::default());
     }
 
@@ -1370,8 +1412,25 @@ fn sync_single_codex_file(
 
     let identity = rollout_identity(file_path);
     let mut parsed = parse_codex_file(file_path, thread_id_from_filename(file_path))?;
+    let replay_truncated_cursor =
+        last_file_size.is_some_and(|size| file_size < size || parsed.line_offset < last_offset);
+    if replay_truncated_cursor {
+        // Replay a truncated rollout from the beginning, retaining the fact that
+        // its historical details may already have been rolled up and pruned.
+        last_offset = 0;
+    } else if parsed.line_offset < last_offset {
+        // An unknown-size legacy cursor can be one line ahead of an unfinished
+        // tail. Keep the complete range historical so rollup protection applies.
+        last_offset = parsed.line_offset;
+    }
     if !parsed.has_billable_tokens {
-        update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
+        update_sync_state_with_file_size(
+            db,
+            &file_path_str,
+            file_modified,
+            parsed.line_offset,
+            Some(file_size),
+        )?;
         return Ok(CodexFileSyncResult::default());
     }
     let Some(root_thread_id) = parsed.root_thread_id.clone() else {
@@ -1498,6 +1557,19 @@ fn sync_single_codex_file(
         caches.pending.remove(file_path);
     }
 
+    // Legacy cursors can include a partial final line that was never imported.
+    // Replay the saved range once through stable request-ID/proxy deduplication.
+    let replay_legacy_cursor = last_file_size.is_none() && last_offset > 0;
+    let rolled_up_through: Option<String> = if replay_legacy_cursor || replay_truncated_cursor {
+        let conn = lock_conn!(db.conn);
+        // Pruning removes all sources through a complete local day, including
+        // deduplicated session rows. Do not recreate those already rolled up.
+        conn.query_row("SELECT MAX(date) FROM usage_daily_rollups", [], |row| {
+            row.get(0)
+        })?
+    } else {
+        None
+    };
     let mut result = CodexFileSyncResult::default();
     for (token_offset, event) in parsed.token_events.iter().enumerate() {
         let Some(event_index) = event.event_index else {
@@ -1521,6 +1593,28 @@ fn sync_single_codex_file(
             if last_modified == 0 || event.timing_line_offset > last_offset {
                 backfill_codex_request_timing(db, &request_id, event.timing)?;
             }
+            if !replay_legacy_cursor {
+                continue;
+            }
+        }
+        // Truncation resets last_offset to zero, so its historical events must
+        // also be checked outside the legacy saved-range branch above.
+        let replaying_history = replay_truncated_cursor || event.line_offset <= last_offset;
+        let already_rolled_up = replaying_history
+            && rolled_up_through.as_ref().is_some_and(|boundary| {
+                event
+                    .timestamp
+                    .as_deref()
+                    .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+                    .map(|timestamp| {
+                        timestamp
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    })
+                    .is_none_or(|date| date.as_str() <= boundary.as_str())
+            });
+        if already_rolled_up {
             continue;
         }
 
@@ -1543,7 +1637,13 @@ fn sync_single_codex_file(
         backfill_codex_request_timing(db, &request_id, event.timing)?;
     }
 
-    update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
+    update_sync_state_with_file_size(
+        db,
+        &file_path_str,
+        file_modified,
+        parsed.line_offset,
+        Some(file_size),
+    )?;
     Ok(result)
 }
 
@@ -1592,6 +1692,30 @@ pub(crate) fn reset_codex_timing_cursors_on_conn(
         if is_codex_cursor_path(&path, &codex_dir) {
             conn.execute(
                 "UPDATE session_log_sync SET last_modified = 0 WHERE file_path = ?1",
+                [path],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Revisit v18/v19 cursors once without deleting usage or changing other importers.
+pub(crate) fn invalidate_codex_sync_fingerprints_on_conn(
+    conn: &rusqlite::Connection,
+) -> Result<(), AppError> {
+    if !sqlite_table_exists(conn, "session_log_sync")? {
+        return Ok(());
+    }
+    let codex_dir = get_codex_config_dir();
+    let paths = conn
+        .prepare("SELECT file_path FROM session_log_sync")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for path in paths {
+        if is_codex_cursor_path(&path, &codex_dir) {
+            conn.execute(
+                "UPDATE session_log_sync SET last_modified = 0, last_file_size = NULL
+                 WHERE file_path = ?1",
                 [path],
             )?;
         }
@@ -1728,6 +1852,8 @@ fn find_codex_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option<Mod
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::session_usage::{get_sync_state, update_sync_state};
+    use std::io::Write;
     use tempfile::tempdir;
 
     const PARENT_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -1742,6 +1868,16 @@ mod tests {
             .join("\n")
             + "\n";
         fs::write(path, contents).unwrap();
+    }
+
+    fn append_preserving_mtime(path: &Path, bytes: &[u8]) {
+        let modified = fs::metadata(path).unwrap().modified().unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(path).unwrap();
+        writer.write_all(bytes).unwrap();
+        writer.flush().unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
     }
 
     fn rollout_path(dir: &Path, thread_id: &str) -> PathBuf {
@@ -1831,6 +1967,634 @@ mod tests {
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
         sync_single_codex_file(db, file, &build_rollout_index(&files))
+    }
+
+    #[test]
+    fn test_codex_sync_skips_invalid_utf8_lines_for_lf_and_crlf() -> Result<(), AppError> {
+        for newline in ["\n", "\r\n"] {
+            let db = Database::memory()?;
+            let temp = tempdir().unwrap();
+            let file = rollout_path(temp.path(), CHILD_A_ID);
+            let mut bytes = [
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ]
+            .iter()
+            .map(|value| format!("{value}{newline}"))
+            .collect::<String>()
+            .into_bytes();
+            bytes.extend_from_slice(b"{\"type\":\"response_item\",\"payload\":\"\xff\"}");
+            bytes.extend_from_slice(newline.as_bytes());
+            bytes.extend_from_slice(format!("{}{newline}", token_count(200, 100, 20)).as_bytes());
+            fs::write(&file, bytes).unwrap();
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 2);
+            assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 5);
+            append_preserving_mtime(
+                &file,
+                format!("{}{newline}", token_count(300, 150, 30)).as_bytes(),
+            );
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+            let conn = lock_conn!(db.conn);
+            let totals: (i64, i64, i64) = conn.query_row(
+                "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM proxy_request_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(totals, (3, 300, 30));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_retries_incomplete_utf8_tail() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let next = format!(
+            "{}\r\n",
+            serde_json::json!({ "type": "response_item", "payload": { "note": "统计" } })
+        );
+        let split = next.find('统').unwrap() + 1;
+        assert!(std::str::from_utf8(&next.as_bytes()[..split]).is_err());
+        append_preserving_mtime(&file, &next.as_bytes()[..split]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 3);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        append_preserving_mtime(&file, &next.as_bytes()[split..]);
+        append_preserving_mtime(&file, format!("{}\n", token_count(200, 100, 20)).as_bytes());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 5);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_recovers_legacy_consumed_tail() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let next = format!("{}\n", token_count(200, 100, 20));
+        assert!(
+            next.is_ascii(),
+            "this regression must not depend on text encoding"
+        );
+        let split = next.len() / 2;
+        append_preserving_mtime(&file, &next.as_bytes()[..split]);
+        // v18 counted the invalid partial JSON as a consumed line.
+        let legacy_offset = BufReader::new(fs::File::open(&file).unwrap())
+            .lines()
+            .count() as i64;
+        assert_eq!(legacy_offset, 4);
+        update_sync_state(
+            &db,
+            &file.to_string_lossy(),
+            metadata_modified_nanos(&fs::metadata(&file).unwrap()),
+            legacy_offset,
+        )?;
+        append_preserving_mtime(&file, &next.as_bytes()[split..]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        append_preserving_mtime(&file, format!("{}\n", token_count(300, 150, 30)).as_bytes());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(totals, (3, 300, 30));
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_v19_migration_recovers_missing_usage_inside_cursor() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let file = rollout_path(&sessions, CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+                token_count(200, 100, 20),
+                token_count(300, 150, 30),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 3);
+        {
+            let conn = lock_conn!(db.conn);
+            // v19 may have missed the old tail and then advanced beyond it.
+            assert_eq!(
+                conn.execute(
+                    "DELETE FROM proxy_request_logs WHERE request_id = ?1",
+                    [format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{CHILD_A_ID}:2")]
+                )?,
+                1
+            );
+            Database::set_user_version(&conn, 19)?;
+        }
+        db.apply_schema_migrations()?;
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), SUM(input_tokens) FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(totals, (3, 300));
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_legacy_partial_tail_preserves_rollups() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2000-01-01T03:00:02Z"),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(db.rollup_and_prune(30)?, 1);
+        let next = format!("{}\n", token_count_at(200, 100, 20, "2099-01-01T03:00:02Z"));
+        let split = next.len() / 2;
+        append_preserving_mtime(&file, &next.as_bytes()[..split]);
+        update_sync_state(
+            &db,
+            &file.to_string_lossy(),
+            metadata_modified_nanos(&fs::metadata(&file).unwrap()),
+            4,
+        )?;
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 3);
+        append_preserving_mtime(&file, &next.as_bytes()[split..]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(db.rollup_and_prune(30)?, 0);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), SUM(input_tokens) FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(totals, (1, 100));
+        let rollup_count: i64 = conn.query_row(
+            "SELECT SUM(request_count) FROM usage_daily_rollups",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rollup_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_legacy_replay_does_not_restore_rolled_up_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2000-01-01T03:00:02Z"),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(db.rollup_and_prune(30)?, 1);
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute("UPDATE session_log_sync SET last_file_size = NULL", [])?;
+        }
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(db.rollup_and_prune(30)?, 0);
+        let conn = lock_conn!(db.conn);
+        let rollup_count: i64 = conn.query_row(
+            "SELECT SUM(request_count) FROM usage_daily_rollups",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rollup_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_imports_appends_with_unchanged_mtime() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2026-10-11T03:59:36Z"),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let initial_metadata = fs::metadata(&file).unwrap();
+
+        // A long-lived rollout writer can append while its visible mtime stays
+        // unchanged. Reproduce that condition independently of the host OS.
+        append_preserving_mtime(
+            &file,
+            format!("{}\n", token_count_at(200, 100, 20, "2026-10-11T04:00:36Z")).as_bytes(),
+        );
+        assert_eq!(
+            metadata_modified_nanos(&fs::metadata(&file).unwrap()),
+            metadata_modified_nanos(&initial_metadata)
+        );
+        assert!(fs::metadata(&file).unwrap().len() > initial_metadata.len());
+
+        assert_eq!(
+            sync_test_file(&db, &file, &[&file])?.imported,
+            1,
+            "usage after 11:59 must be imported even when mtime does not advance"
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+
+        let conn = lock_conn!(db.conn);
+        let (count, latest): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), MAX(created_at) FROM proxy_request_logs
+             WHERE data_source = 'codex_session'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(count, 2);
+        assert_eq!(
+            latest,
+            DateTime::parse_from_rfc3339("2026-10-11T04:00:36Z")
+                .unwrap()
+                .timestamp()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_size_cursor_survives_database_reopen() -> Result<(), AppError> {
+        let temp = tempdir().unwrap();
+        let database_file = temp.path().join("usage.db");
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        {
+            let db = Database {
+                conn: Mutex::new(rusqlite::Connection::open(&database_file)?),
+            };
+            db.create_tables()?;
+            db.apply_schema_migrations()?;
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        }
+
+        let db = Database {
+            conn: Mutex::new(rusqlite::Connection::open(&database_file)?),
+        };
+        assert_eq!(
+            get_sync_state_with_file_size(&db, &file.to_string_lossy())?.2,
+            Some(fs::metadata(&file).unwrap().len()),
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        append_preserving_mtime(&file, format!("{}\n", token_count(200, 100, 20)).as_bytes());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let conn = lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row
+                .get::<_, i64>(0))?,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_legacy_cursor_catches_up_without_resetting_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute("UPDATE session_log_sync SET last_file_size = NULL", [])?;
+        }
+        append_preserving_mtime(&file, format!("{}\n", token_count(200, 100, 20)).as_bytes());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(totals, (2, 200, 20));
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_retries_partial_tail_with_unchanged_mtime() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+
+        let next = format!("{}\n", token_count(200, 100, 20));
+        let split = next.len() / 2;
+        append_preserving_mtime(&file, &next.as_bytes()[..split]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 3);
+
+        append_preserving_mtime(&file, &next.as_bytes()[split..]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 4);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_accepts_complete_final_record_without_newline() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(&file, &[session_meta(CHILD_A_ID), turn_context()]);
+        append_preserving_mtime(&file, token_count(100, 50, 10).to_string().as_bytes());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_recovers_truncated_file_with_unchanged_mtime() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let file = rollout_path(temp.path(), CHILD_A_ID);
+        let mut records = vec![
+            session_meta(CHILD_A_ID),
+            turn_context(),
+            token_count(100, 50, 10),
+        ];
+        write_jsonl(&file, &records);
+        append_preserving_mtime(&file, &vec![b'\n'; 1024]);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let before = fs::metadata(&file).unwrap();
+
+        records.push(token_count(200, 100, 20));
+        write_jsonl(&file, &records);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+            .unwrap();
+        assert!(fs::metadata(&file).unwrap().len() < before.len());
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 4);
+        let conn = lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row
+                .get::<_, i64>(0))?,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_truncation_does_not_restore_rolled_up_usage() -> Result<(), AppError> {
+        for shrink_bytes in [true, false] {
+            let db = Database::memory()?;
+            let temp = tempdir().unwrap();
+            let file = rollout_path(temp.path(), CHILD_A_ID);
+            let mut records = vec![
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2000-01-01T03:00:02Z"),
+            ];
+            write_jsonl(&file, &records);
+            append_preserving_mtime(&file, &vec![b'\n'; 1024]);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+            assert_eq!(db.rollup_and_prune(30)?, 1);
+            let original = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(original.total_requests, 1);
+            let expected_cost = original.total_cost.parse::<Decimal>().unwrap() * Decimal::from(2);
+            let before = fs::metadata(&file).unwrap();
+
+            records.push(token_count_at(200, 100, 20, "2099-01-01T03:00:02Z"));
+            write_jsonl(&file, &records);
+            if !shrink_bytes {
+                // Fewer complete lines must also trigger recovery when the
+                // rewritten file grows in bytes instead of shrinking.
+                append_preserving_mtime(&file, &vec![b' '; before.len() as usize]);
+            }
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            assert_eq!(
+                fs::metadata(&file).unwrap().len() < before.len(),
+                shrink_bytes
+            );
+            assert_eq!(
+                sync_test_file(&db, &file, &[&file])?.imported,
+                1,
+                "only the new request may be imported after truncation"
+            );
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+
+            let summary = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(summary.total_requests, 2);
+            assert_eq!(summary.total_input_tokens, 100);
+            assert_eq!(summary.total_cache_read_tokens, 100);
+            assert_eq!(summary.total_output_tokens, 20);
+            assert_eq!(summary.real_total_tokens, 220);
+            assert_eq!(
+                summary.total_cost.parse::<Decimal>().unwrap(),
+                expected_cost
+            );
+            assert_eq!(
+                db.rollup_and_prune(30)?,
+                0,
+                "the rolled-up request must not be recreated as an old detail row"
+            );
+            let after_prune = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(after_prune.total_requests, 2);
+            assert_eq!(after_prune.total_cost, summary.total_cost);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_truncation_after_failed_rollup_preserves_usage() -> Result<(), AppError> {
+        for (trigger_sql, expected_error) in [
+            (
+                "CREATE TRIGGER fail_rollup BEFORE INSERT ON usage_daily_rollups
+                 BEGIN SELECT RAISE(ABORT, 'forced rollup failure'); END;",
+                "Rollup aggregation failed",
+            ),
+            (
+                "CREATE TRIGGER fail_rollup BEFORE DELETE ON proxy_request_logs
+                 BEGIN SELECT RAISE(ABORT, 'forced prune failure'); END;",
+                "Pruning old logs failed",
+            ),
+        ] {
+            let db = Database::memory()?;
+            let temp = tempdir().unwrap();
+            let file = rollout_path(temp.path(), CHILD_A_ID);
+            let mut records = vec![
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2000-01-01T03:00:02Z"),
+            ];
+            write_jsonl(&file, &records);
+            append_preserving_mtime(&file, &vec![b'\n'; 1024]);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+            let original = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            let expected_cost = original.total_cost.parse::<Decimal>().unwrap() * Decimal::from(2);
+            {
+                let conn = lock_conn!(db.conn);
+                conn.execute_batch(trigger_sql)?;
+            }
+            let error = db.rollup_and_prune(30).unwrap_err();
+            assert!(error.to_string().contains(expected_error), "{error}");
+            let after_failure = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(after_failure.total_requests, 1);
+            assert_eq!(after_failure.total_cost, original.total_cost);
+
+            // Both requests exceed retention. A failed rollup must not cause
+            // either a duplicate of the retained detail or loss of the new row.
+            let before = fs::metadata(&file).unwrap();
+            records.push(token_count_at(200, 100, 20, "2000-01-02T03:00:02Z"));
+            write_jsonl(&file, &records);
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            assert!(fs::metadata(&file).unwrap().len() < before.len());
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+            assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+            let summary = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(summary.total_requests, 2);
+            assert_eq!(summary.total_input_tokens, 100);
+            assert_eq!(summary.total_cache_read_tokens, 100);
+            assert_eq!(summary.total_output_tokens, 20);
+            assert_eq!(
+                summary.total_cost.parse::<Decimal>().unwrap(),
+                expected_cost
+            );
+
+            {
+                let conn = lock_conn!(db.conn);
+                conn.execute_batch("DROP TRIGGER fail_rollup;")?;
+            }
+            assert_eq!(db.rollup_and_prune(30)?, 2);
+            assert_eq!(db.rollup_and_prune(30)?, 0);
+            let after_retry = db.get_usage_summary(None, None, Some("codex"), None, None)?;
+            assert_eq!(after_retry.total_requests, 2);
+            assert_eq!(after_retry.total_cost, summary.total_cost);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_sync_archived_size_cursor_detects_appended_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let archived = temp.path().join("archived_sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        let source = rollout_path(&sessions, CHILD_A_ID);
+        let destination = rollout_path(&archived, CHILD_A_ID);
+        write_jsonl(
+            &source,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &source, &[&source])?.imported, 1);
+        fs::rename(&source, &destination).unwrap();
+
+        assert_eq!(
+            sync_test_file(&db, &destination, &[&destination])?.imported,
+            0
+        );
+        assert_eq!(
+            get_codex_sync_state(&db, &destination)?.2,
+            Some(fs::metadata(&destination).unwrap().len())
+        );
+        append_preserving_mtime(
+            &destination,
+            format!("{}\n", token_count(200, 100, 20)).as_bytes(),
+        );
+        assert_eq!(
+            sync_test_file(&db, &destination, &[&destination])?.imported,
+            1
+        );
+        assert_eq!(
+            sync_test_file(&db, &destination, &[&destination])?.imported,
+            0
+        );
+        let conn = lock_conn!(db.conn);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row
+                .get::<_, i64>(0))?,
+            2
+        );
+        Ok(())
     }
 
     #[test]
@@ -2740,6 +3504,16 @@ mod tests {
         fs::create_dir_all(&archived).unwrap();
         let source = rollout_path(&sessions, PARENT_ID);
         let archived_file = rollout_path(&archived, PARENT_ID);
+        // A consumed source cursor must have its corresponding imported row.
+        write_jsonl(
+            &source,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        assert_eq!(sync_test_file(&db, &source, &[&source])?.imported, 1);
         write_jsonl(
             &archived_file,
             &[

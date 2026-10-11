@@ -430,6 +430,25 @@ pub(crate) fn get_sync_state(db: &Database, file_path: &str) -> Result<(i64, i64
     Ok(result.unwrap_or((0, 0)))
 }
 
+/// Size-aware cursor for append-only logs whose writer may keep mtime unchanged.
+/// A missing size on an upgraded database forces one deduplicated recovery scan.
+pub(crate) fn get_sync_state_with_file_size(
+    db: &Database,
+    file_path: &str,
+) -> Result<(i64, i64, Option<u64>), AppError> {
+    let conn = lock_conn!(db.conn);
+    match conn.query_row(
+        "SELECT last_modified, last_line_offset, last_file_size
+         FROM session_log_sync WHERE file_path = ?1",
+        [file_path],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ) {
+        Ok(state) => Ok(state),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok((0, 0, None)),
+        Err(error) => Err(AppError::Database(format!("查询同步状态失败: {error}"))),
+    }
+}
+
 /// 返回文件 mtime 的纳秒时间戳。
 ///
 /// `session_log_sync.last_modified` 旧数据是秒级时间戳；新写入纳秒值不需要
@@ -452,6 +471,19 @@ pub(crate) fn update_sync_state(
     last_modified: i64,
     last_offset: i64,
 ) -> Result<(), AppError> {
+    update_sync_state_with_file_size(db, file_path, last_modified, last_offset, None)
+}
+
+/// Persist the size captured before reading, atomically with the line cursor.
+/// If the writer appends during parsing, the next scan sees a size mismatch and
+/// safely revisits the tail rather than marking unseen bytes as processed.
+pub(crate) fn update_sync_state_with_file_size(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+    last_file_size: Option<u64>,
+) -> Result<(), AppError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -459,9 +491,10 @@ pub(crate) fn update_sync_state(
 
     let conn = lock_conn!(db.conn);
     conn.execute(
-        "INSERT OR REPLACE INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![file_path, last_modified, last_offset, now],
+        "INSERT OR REPLACE INTO session_log_sync
+         (file_path, last_modified, last_line_offset, last_synced_at, last_file_size)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![file_path, last_modified, last_offset, now, last_file_size],
     )
     .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
     Ok(())
