@@ -1318,7 +1318,13 @@ mod tests {
         let temp = tempdir().unwrap();
         let sessions = temp.path().join("sessions");
 
-        let main_wire = sessions.join("wd_proj/sess-1/agents/main/wire.jsonl");
+        // Match the native paths returned by read_dir for cursor assertions.
+        let main_wire = sessions
+            .join("wd_proj")
+            .join("sess-1")
+            .join("agents")
+            .join("main")
+            .join("wire.jsonl");
         write_wire(
             &main_wire,
             &[
@@ -1473,7 +1479,12 @@ mod tests {
         let db = Database::memory()?;
         let temp = tempdir().unwrap();
         let sessions = temp.path().join("sessions");
-        let wire = sessions.join("wd_proj/sess-1/agents/main/wire.jsonl");
+        let wire = sessions
+            .join("wd_proj")
+            .join("sess-1")
+            .join("agents")
+            .join("main")
+            .join("wire.jsonl");
         write_wire(
             &wire,
             &[

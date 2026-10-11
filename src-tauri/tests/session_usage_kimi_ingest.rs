@@ -221,7 +221,13 @@ fn wire_ingest_is_idempotent_and_incremental() {
     // 主代理 wire.jsonl：metadata → llm.request → step.end → 损坏行 →
     // 与第 3 行 step.end 同 usage 的配对 usage.record（真实当前代格式，
     // 必须被抑制防双算）→ step.end → 撕裂末行（无结尾 \n，不得消费）。
-    let main_wire = sessions.join("wd_proj/sess-1/agents/main/wire.jsonl");
+    // Match read_dir's native separators when checking the persisted cursor.
+    let main_wire = sessions
+        .join("wd_proj")
+        .join("sess-1")
+        .join("agents")
+        .join("main")
+        .join("wire.jsonl");
     let main_content = concat!(
         "{\"type\":\"metadata\",\"protocol_version\":\"1.5\",\"created_at\":1754000000000}\n",
         "{\"type\":\"llm.request\",\"time\":1753999999000,\"model\":\"kimi-for-coding\",\"modelAlias\":\"main\"}\n",

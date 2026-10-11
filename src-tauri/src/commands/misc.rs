@@ -1221,6 +1221,16 @@ fn is_windows_app_execution_alias_dir(path: &Path) -> bool {
 }
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn push_env_single_dir(
+    paths: &mut Vec<std::path::PathBuf>,
+    value: Option<std::ffi::OsString>,
+) {
+    if let Some(raw) = value {
+        push_unique_path(paths, std::path::PathBuf::from(raw));
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn push_env_child_dir(
     paths: &mut Vec<std::path::PathBuf>,
     value: Option<std::ffi::OsString>,
