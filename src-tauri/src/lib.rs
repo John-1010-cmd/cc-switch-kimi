@@ -61,7 +61,7 @@ use std::{fmt, sync::Arc};
 use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 #[cfg(target_os = "windows")]
@@ -240,6 +240,39 @@ fn macos_tray_icon() -> Option<Image<'static>> {
     }
 }
 
+/// Explicit app reopen: restore the window and navigate to the default usage page.
+/// Do not run this on ordinary focus events, which must preserve the current page.
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    if crate::lightweight::is_lightweight_mode() {
+        if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+            log::error!("退出轻量模式重建窗口失败: {e}");
+            return;
+        }
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        // Newly created WebViews start on usage; existing ones need an explicit reset.
+        if let Err(e) = window.emit("navigate-to-usage", ()) {
+            log::warn!("切换到默认使用统计页面失败: {e}");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = window.set_skip_taskbar(false);
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        #[cfg(target_os = "linux")]
+        {
+            linux_fix::nudge_main_window(window.clone());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            tray::apply_tray_policy(app, true);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
@@ -256,22 +289,7 @@ pub fn run() {
                 log::debug!("  arg[{i}]: {}", url_for_log(arg));
             }
 
-            if crate::lightweight::is_lightweight_mode() {
-                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
-                    log::error!("退出轻量模式重建窗口失败: {e}");
-                }
-            }
-
-            // Show and focus window regardless
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    linux_fix::nudge_main_window(window.clone());
-                }
-            }
+            show_main_window(app);
         }));
     }
 
@@ -1267,20 +1285,7 @@ pub fn run() {
         {
             // macOS 在 Dock 图标被点击并重新激活应用时会触发 Reopen 事件，这里手动恢复主窗口
             if let RunEvent::Reopen { .. } = event {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(false);
-                    }
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    tray::apply_tray_policy(app_handle, true);
-                } else if crate::lightweight::is_lightweight_mode() {
-                    if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle) {
-                        log::error!("退出轻量模式重建窗口失败: {e}");
-                    }
-                }
+                show_main_window(app_handle);
             }
         }
 

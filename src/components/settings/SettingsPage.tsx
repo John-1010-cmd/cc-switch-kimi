@@ -56,6 +56,7 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void;
   onImportSuccess?: () => void | Promise<void>;
   defaultTab?: string;
+  navigationRequestId?: number;
 }
 
 export function SettingsPage({
@@ -63,6 +64,7 @@ export function SettingsPage({
   onOpenChange,
   onImportSuccess,
   defaultTab = "general",
+  navigationRequestId = 0,
 }: SettingsDialogProps) {
   const { t } = useTranslation();
   const {
@@ -98,7 +100,7 @@ export function SettingsPage({
     resetStatus,
   } = useImportExport({ onImportSuccess });
 
-  const [activeTab, setActiveTab] = useState<string>("general");
+  const [activeTab, setActiveTab] = useState<string>(defaultTab);
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
   const tabScrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -107,7 +109,7 @@ export function SettingsPage({
       setActiveTab(defaultTab);
       resetStatus();
     }
-  }, [open, resetStatus, defaultTab]);
+  }, [open, resetStatus, defaultTab, navigationRequestId]);
 
   useEffect(() => {
     if (requiresRestart) {

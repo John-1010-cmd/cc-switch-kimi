@@ -127,6 +127,14 @@ vi.mock("@/components/UpdateBadge", () => ({
   ),
 }));
 
+vi.mock("@/components/settings/SettingsPage", () => ({
+  SettingsPage: ({ defaultTab, onOpenChange }: any) => (
+    <div data-testid="settings-page" data-default-tab={defaultTab}>
+      <button onClick={() => onOpenChange(false)}>back-to-providers</button>
+    </div>
+  ),
+}));
+
 vi.mock("@/components/mcp/McpPanel", () => ({
   default: ({ open, onOpenChange }: any) =>
     open ? (
@@ -159,6 +167,12 @@ describe("App integration with MSW", () => {
   it("covers basic provider flows via real hooks", async () => {
     const { default: App } = await import("@/App");
     renderApp(App);
+
+    expect(screen.getByTestId("settings-page")).toHaveAttribute(
+      "data-default-tab",
+      "usage",
+    );
+    fireEvent.click(screen.getByText("back-to-providers"));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(

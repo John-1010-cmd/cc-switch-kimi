@@ -70,30 +70,29 @@ const getInitialApp = (): AppId => {
   return "claude";
 };
 
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
-const VALID_VIEWS: View[] = ["providers", "settings", "mcp"];
-
-const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
-    return saved;
-  }
-  return "providers";
-};
+// Always launch on the usage dashboard to provide the same default across platforms.
 
 function App() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
-  const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
+  const [currentView, setCurrentView] = useState<View>("settings");
+  const [settingsDefaultTab, setSettingsDefaultTab] = useState("usage");
+  const [settingsNavigationRequestId, setSettingsNavigationRequestId] =
+    useState(0);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
 
-  useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
-  }, [currentView]);
+  const openUsage = () => {
+    setSettingsDefaultTab("usage");
+    setSettingsNavigationRequestId((requestId) => requestId + 1);
+    setCurrentView("settings");
+  };
+
+  // Reopening an existing WebView does not rerun the initial state above.
+  // A new request also resets SettingsPage's tab when defaultTab is unchanged.
+  useTauriEvent<null>("navigate-to-usage", openUsage);
 
   const { data: settingsData } = useSettingsQuery();
   const useAppWindowControls =
@@ -492,6 +491,7 @@ function App() {
               onOpenChange={() => setCurrentView("providers")}
               onImportSuccess={handleImportSuccess}
               defaultTab={settingsDefaultTab}
+              navigationRequestId={settingsNavigationRequestId}
             />
           );
         case "mcp":
@@ -692,10 +692,7 @@ function App() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => {
-                    setSettingsDefaultTab("usage");
-                    setCurrentView("settings");
-                  }}
+                  onClick={openUsage}
                   title={t("usage.title", {
                     defaultValue: "使用统计",
                   })}
